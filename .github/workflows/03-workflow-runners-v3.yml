@@ -20,6 +20,8 @@ jobs:
         run: |
           echo "This job is running on a Windows runner."
           echo $env:RUNNER_OS
+          echo $0
+          echo $SHELL
 
   mac-echo:
     runs-on: macos-latest
