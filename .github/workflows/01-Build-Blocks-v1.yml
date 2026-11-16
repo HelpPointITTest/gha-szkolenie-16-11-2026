@@ -10,10 +10,20 @@ jobs:
     steps:
       - name: Say hello
         run: echo "Hello, World!"
+      - name: Utworz plik
+        run: touch nowy_plik.txt
+      - name: Sprawdz plik
+        run: ls -l nowy_plik.txt
+      - name: Wpis do pliku
+        run: echo "To jest nowa linia" >> nowy_plik.txt
+      - name: Sprawdz zawartosc pliku
+        run: cat nowy_plik.txt
 
   echo-goodbye:
     runs-on: ubuntu-latest
     steps:
+      - name: Odczytaj plik
+        run: cat nowy_plik.txt
       - name: Failed step
         run: |
           echo "I will fail"
