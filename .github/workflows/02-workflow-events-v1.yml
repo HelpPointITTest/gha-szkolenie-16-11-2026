@@ -1,7 +1,9 @@
 name: 02 - Workflow Events v1
 
 on:
-  #push:
+  push:
+    branches:
+      - CW02
   workflow_dispatch:
 
 jobs:
