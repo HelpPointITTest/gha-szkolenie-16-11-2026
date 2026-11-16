@@ -2,10 +2,12 @@ name: 02 - Workflow Events v2
 # Wersja rozszerzona — push, pull_request, schedule, workflow_dispatch
 
 on:
-  #push:
-  pull_request:
+  push:
     branches:
       - CW02
+  pull_request:
+    branches:
+      - main
   #schedule:
   #  - cron: "0 9 * * *"     # codziennie o 09:00 UTC
   workflow_dispatch:
