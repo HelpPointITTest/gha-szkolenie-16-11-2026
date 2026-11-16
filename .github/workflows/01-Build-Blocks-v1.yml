@@ -24,7 +24,8 @@ jobs:
     needs: echo-hello
     steps:
       - name: Odczytaj plik
-        run: cat nowy_plik.txt
+        run: |
+          cat nowy_plik.txt 
       - name: Failed step
         run: |
           echo "I will fail"
