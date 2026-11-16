@@ -2,7 +2,7 @@ name: 01 - Building Blocks v1
 
 on:
   push:
-  workflow_dispatch:
+  #workflow_dispatch:
 
 jobs:
   echo-hello:
