@@ -2,3 +2,4 @@
 
 zmian mojego repo
 zmaina do naszego repo i utworzenie pusha do pliku ktorym zarzadza github actions.
+2 runy github actions
