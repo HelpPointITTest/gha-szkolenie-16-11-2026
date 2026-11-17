@@ -3,7 +3,7 @@ name: 99D actions dodatkowe plik do modyfikacji w actions
 on:
   push:
     branches:
-      - main
+      - D99
     # Push zmieniający wyłącznie ten plik nie uruchamia tego workflow.
     paths-ignore:
       - DODATKOWE/Modyfikacja_pliku_github_actions/Plik_do_modyfikacji.txt
@@ -29,7 +29,7 @@ jobs:
       - name: Pobierz gałąź main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: D99
           fetch-depth: 0
           # Bez PAT: push przez GITHUB_TOKEN nie wyzwala kolejnych workflow push.
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -78,9 +78,9 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: aktualizacja identyfikatora do build ${GITHUB_RUN_NUMBER}"
+          git commit -m "chore: aktualizacja identyfikatora do build ${GITHUB_RUN_NUMBER} na gałęzi D99"
 
           # Uwzględnij zmiany dodane do main w trakcie działania workflow.
           # Konflikt przerywa operację; nie stosujemy force push.
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git pull --rebase origin D99
+          git push origin HEAD:D99
