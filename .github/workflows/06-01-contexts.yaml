@@ -13,15 +13,15 @@ on:
         default: false
 
 env:
-  MY_WORKFLOW_VAR: 'workflow'
-  MY_OVERWRITTEN_VAR: 'workflow'
+  MY_WORKFLOW_VAR: 'Zdefinowana na poziomie workflow'
+  MY_OVERWRITTEN_VAR: 'Zadfinowan na poziome workflow - napisana' # <- wartość workflow, która może być nadpisana na poziomie joba lub kroku
 
 jobs:
   echo-data:
     runs-on: ubuntu-latest
     env:
       MY_JOB_VAR: 'job'
-      MY_OVERWRITTEN_VAR: 'job'
+      MY_OVERWRITTEN_VAR: 'job' # <- nadpisuje wartość workflow na poziomie joba
     steps:
       - name: Display information
         run: |
@@ -37,7 +37,7 @@ jobs:
           echo "Variable value: ${{ vars.MY_VAR }}"
       - name: Print Env Variables
         env:
-          MY_OVERWRITTEN_VAR: 'step'
+          MY_OVERWRITTEN_VAR: 'step' # <- nadpisuje wartość workflow i joba na poziomie kroku
         run: |
           echo "Workflow env: ${{ env.MY_WORKFLOW_VAR }}"
           echo "Overwritten env: ${{ env.MY_OVERWRITTEN_VAR }}"
