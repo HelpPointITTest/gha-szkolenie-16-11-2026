@@ -12,7 +12,7 @@ jobs:
       run:
         working-directory: CWICZENIA/04-praca-z-zewnetrzymi-akcjami/react-app
     steps:
-      # 1
+      # 1 bez tego nie mamy kodu źródłowego do dalszych kroków
       - name: Checkout Code
         uses: actions/checkout@v4
       # 2
