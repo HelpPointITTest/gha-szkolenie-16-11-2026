@@ -20,7 +20,7 @@ jobs:
         run: cat nowy_plik.txt
 
   echo-goodbye:
-    runs-on: selfhostlinux
+    runs-on: ubuntu-latest
     needs: echo-hello
     steps:
       - name: Odczytaj plik
