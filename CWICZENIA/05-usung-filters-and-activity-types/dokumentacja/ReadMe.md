@@ -24,3 +24,4 @@ teraz powinno dziala czyli path ma znaczenie :)
 ### CHANGES 17.11.2026 CW05_3
 
 - update dokumentacji - dodanie informacji o tym, że path ma znaczenie przy filtrach
+- fix sciezki na CWICZENIA/05-usung-filters-and-activity-types/dokumentacja
