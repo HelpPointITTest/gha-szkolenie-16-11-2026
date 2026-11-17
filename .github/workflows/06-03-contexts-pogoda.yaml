@@ -13,7 +13,7 @@ on:
         default: "Warsaw"
 
 env:
-  MY_KLUCZYK: '9ab97aa4e9f307c97e35ae21a2410532'
+  MY_KLUCZYK: "${{ secrets.API_KEY }}"
 
 
 jobs:
