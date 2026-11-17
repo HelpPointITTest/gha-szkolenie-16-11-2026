@@ -9,7 +9,9 @@ jobs:
     runs-on: selfhostlinux
     steps:
       - name: Show environment
-        run: env
+        run: |
+          java -version
+          env
       - name: Say hello
         run: echo "Hello, World!"
       - name: Utworz plik
