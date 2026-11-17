@@ -1,5 +1,5 @@
 
 Aplikacja = testowa
 Autor = Piotr Koska
-Identyfikator = 1
-IdentyfikatorSHA = a064294
+Identyfikator = 2
+IdentyfikatorSHA = e56c587
