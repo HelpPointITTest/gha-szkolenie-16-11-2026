@@ -6,7 +6,7 @@ on:
 
 jobs:
   echo-hello:
-    runs-on: ubuntu-latest
+    runs-on: selfhostlinux
     steps:
       - name: Say hello
         run: echo "Hello, World!"
@@ -20,7 +20,7 @@ jobs:
         run: cat nowy_plik.txt
 
   echo-goodbye:
-    runs-on: ubuntu-latest
+    runs-on: selfhostlinux
     needs: echo-hello
     steps:
       - name: Odczytaj plik
@@ -29,7 +29,7 @@ jobs:
       - name: Failed step
         run: |
           echo "I will fail"
-          exit 1  # dowolny kod != 0 spowoduje błąd kroku
+          exit 0  # dowolny kod != 0 spowoduje błąd kroku
       - name: Say goodbye
         run: echo "Goodbye!"
         # Dodaj inne kroki i zobacz jak zachowuje sie github actions jako osobne joby oraz kroki w tym jobie.
