@@ -1,15 +1,16 @@
 # .github/workflows/ci.yml
 name: 05 - CI for "05-usung-filters-and-activity-types"
+run-name: CI for ${{ github.sha }} "05-usung-filters-and-activity-types"
 
 on:
   push:
     branches: [ CW05 ]
     paths-ignore:
-      - '05-usung-filters-and-activity-types/dokumentacja/**'
+      - 'CWICZENIA/05-usung-filters-and-activity-types/dokumentacja/**'
   pull_request:
     branches: [ CW05 ]
     paths-ignore:
-      - '05-usung-filters-and-activity-types/dokumentacja/**'
+      - 'CWICZENIA/05-usung-filters-and-activity-types/dokumentacja/**'
   # opcjonalnie: ręczne odpalenie
   workflow_dispatch:
 
