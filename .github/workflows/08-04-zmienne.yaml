@@ -33,7 +33,7 @@ env:
   DOCKER_PORT_EXTERNAL: ${{ vars.DOCKER_PORT_EXTERNAL || '18008' }} # 18008
   DEPLOY_CONTAINER_NAME: ${{ vars.DEPLOY_CONTAINER_NAME || 'pogoda_api_variables_deploy' }} # pogoda_api_variables_deploy
   WEATHER_CITY: ${{ vars.WEATHER_CITY || 'Warsaw' }} # Warsaw
-  DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'feature/06-pogoda-api' }} # feature/06-pogoda-api
+  DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH || 'main' }} # feature/06-pogoda-api
   CONFIG_SCOPE: workflow
 
 jobs:
