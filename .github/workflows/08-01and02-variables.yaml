@@ -16,6 +16,7 @@ env:
 
 jobs:
   echo:
+    
     runs-on: ubuntu-latest
     env:
       JOB_VAR: 'I am a job env var'
@@ -39,6 +40,7 @@ jobs:
 
 # CW08_02          
   echo2:
+    environment: DEV
     runs-on: ubuntu-latest
     steps:
       - name: Print Variables

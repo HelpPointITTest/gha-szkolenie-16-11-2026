@@ -5,6 +5,8 @@
 - [Podstawy zmiennych środowiskowych i ich zakresów](CW08_01.md).
 - [Zmienne w workflow pogodowego API — na bazie 06-06c](CW08_zmienne.md).
 - [Rozwiązanie: 08-04-zmienne.yaml](../../.github/workflows/08-04-zmienne.yaml).
+- [Ćwiczenie 08.05: GitHub Environments — instrukcja krok po kroku](CW08_05_ENVIROMENT.md).
+- [Rozwiązanie: 08-05-ENVIROMENT.yaml](../../.github/workflows/08-05-ENVIROMENT.yaml).
 
 GitHub Actions allows you to work with environment variables to customize and parameterize your workflows. Environment variables are key-value pairs that can store secrets, configuration settings, or other data. This README provides examples of how to use environment variables effectively in GitHub Actions and outlines best practices for managing them securely.
 
