@@ -23,7 +23,7 @@ defaults:
 # OPENWEATHER_API_KEY — Twój klucz API OpenWeatherMap.
 # Oba są odczytywane przez secrets.*, bez zapisywania ich wartości w tym pliku.
 env:
-  WORKDIR: ${{ vars.WORKDIR }} # ./CWICZENIA/06-context/pogoda_python_flusk
+  WORKDIR: ${{ vars.WORKDIR || './CWICZENIA/08-variables/pogoda_python_flusk' }} 
   DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || 'piotrskoska' }} # TWOJ_LOGIN_DOCKERHUB
   DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME || 'python_pogoda' }} # python_pogoda
   # Te dwie wartości są składane automatycznie; nie twórz dla nich Repository variables.
