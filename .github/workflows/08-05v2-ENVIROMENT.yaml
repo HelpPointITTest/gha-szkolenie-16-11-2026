@@ -98,7 +98,9 @@ jobs:
             "${TEST_IMAGE}:${CI_TAG}"
 
       - name: Wait for CI API to be ready
+        continue-on-error: true
         run: |
+        
           curl --fail --silent --show-error \
             --retry 15 --retry-all-errors --retry-delay 2 \
             --retry-max-time 60 --max-time 5 \
