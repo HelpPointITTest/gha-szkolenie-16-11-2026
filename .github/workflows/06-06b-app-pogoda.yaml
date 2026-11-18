@@ -1,10 +1,10 @@
 name: 06-06b Pogoda API CI
 
 on:
-  push:
-    branches: [ feature/06-pogoda-api ]
-  pull_request:
-    branches: [ feature/06-pogoda-api ]
+  # push:
+  #   branches: [ feature/06-pogoda-api ]
+  # pull_request:
+  #   branches: [ feature/06-pogoda-api ]
   workflow_dispatch:
 
 env:
@@ -100,7 +100,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/06-pogoda-api'
 
     steps:
       - name: Checkout repository
