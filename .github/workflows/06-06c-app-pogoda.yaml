@@ -12,6 +12,7 @@ env:
   TEST_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/python_pogoda
   HUB_IMAGE_BASE: ${{ secrets.DOCKERHUB_USERNAME }}/python_pogoda
   DOCKERHUB_TAG: latest
+  DOCKER_PORT_EXTERNAL: 18000
 
 jobs:
   # =====================
@@ -159,7 +160,7 @@ jobs:
         run: |
           docker run -d \
             --name pogoda_api_deploy \
-            -p 127.0.0.1:8000:8000 \
+            -p ${{ env.DOCKER_PORT_EXTERNAL }}:8000 \
             -e OPENWEATHER_API_KEY \
             "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
 
@@ -170,7 +171,7 @@ jobs:
             --retry 15 --retry-connrefused --retry-delay 2 \
             --retry-max-time 60 --max-time 5 \
             --output /dev/null \
-            http://127.0.0.1:8000/openapi.json
+            http://127.0.0.1:${{ env.DOCKER_PORT_EXTERNAL }}/openapi.json
           test "$(docker inspect --format '{{.State.Running}}' pogoda_api_deploy)" = true
           echo "Kontener pobrany z Docker Hub działa, a API odpowiada."
 
