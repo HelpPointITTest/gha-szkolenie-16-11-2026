@@ -1,110 +1,111 @@
+"""WWW i API pogody. Klucz dostawcy pochodzi wyłącznie ze środowiska procesu."""
+
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Literal
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+BASE_DIR = Path(__file__).resolve().parent
+PROVIDER_URL = "https://api.openweathermap.org/data/2.5/weather"
 app = FastAPI(
-    title="Pogoda API",
-    description="Proste API do pobierania pogody z OpenWeatherMap z fallbackiem na wttr.in",
-    version="0.1.0",
+    title="Pogodnie — WWW i API",
+    description="Podaj miasto. Klucz API obsługuje wyłącznie serwer.",
+    version="1.0.0",
 )
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
-def get_openweather(city: str, api_key: str) -> dict | None:
-    url = "https://api.openweathermap.org/data/2.5/weather"
-    params = {
-        "q": city,
-        "appid": api_key,
-        "units": "metric",
-    }
+class Weather(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
 
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-    except requests.RequestException:
-        return None
-
-    try:
-        data = resp.json()
-    except ValueError:
-        return None
-
-    return data
-
-
-def get_wttr(city: str) -> str:
-    url = f"https://wttr.in/{city}"
-    params = {"format": "j1"}  # JSON, możemy np. zwrócić dalej
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        return resp.text
-    except requests.RequestException:
-        return ""
+    city: str = Field(min_length=1)
+    country: str
+    temperature: float
+    feels_like: float
+    description: str = Field(min_length=1)
+    humidity: int = Field(ge=0, le=100)
+    pressure: int = Field(gt=0)
+    wind_speed: float = Field(ge=0)
+    visibility: int | None = Field(default=None, ge=0)
+    clouds: int | None = Field(default=None, ge=0, le=100)
+    condition_code: int
+    is_day: bool
+    observed_at: int = Field(gt=0)
+    sunrise: int | None = Field(default=None, gt=0)
+    sunset: int | None = Field(default=None, gt=0)
+    timezone_offset: int = Field(ge=-86400, le=86400)
+    source: Literal["openweathermap"] = "openweathermap"
+    units: Literal["metric"] = "metric"
 
 
-@app.get("/weather")
-def weather(
-    city: str = Query(..., description="Nazwa miasta"),
-    api_key: Optional[str] = Query(
-        default=None,
-        description="Klucz API dla OpenWeatherMap. Jeśli brak – użyje ENV OPENWEATHER_API_KEY.",
-    ),
-):
-    """
-    Zwraca dane pogodowe z OWM, a jeśli miasto nie istnieje lub wystąpi błąd –
-    próbuje zwrócić dane z wttr.in.
-    """
-    key = api_key or os.getenv("OPENWEATHER_API_KEY")
+@app.get("/", include_in_schema=False)
+def homepage() -> FileResponse:
+    return FileResponse(BASE_DIR / "static" / "index.html")
+
+
+@app.get("/healthz", tags=["Stan aplikacji"])
+def health() -> dict:
+    """Gotowość procesu, bez wywołania dostawcy pogody."""
+    return {"status": "ok", "service": "pogoda", "version": "1.0.0"}
+
+
+def fetch_weather(city: str) -> Weather:
+    key = os.environ.get("OPENWEATHER_API_KEY", "").strip()
     if not key:
-        raise HTTPException(
-            status_code=400,
-            detail="Brak klucza API. Podaj ?api_key=... albo ustaw zmienną OPENWEATHER_API_KEY.",
+        raise HTTPException(503, "Serwis pogody nie jest jeszcze skonfigurowany. Skontaktuj się z administratorem.")
+    try:
+        provider = requests.get(
+            PROVIDER_URL,
+            params={"q": city, "appid": key, "units": "metric", "lang": "pl"},
+            timeout=(5, 15),
         )
+    except requests.RequestException:
+        # Wyjątek requests może zawierać URL z kluczem. Nie zwracaj ani nie loguj go.
+        raise HTTPException(502, "Nie udało się połączyć z dostawcą pogody. Spróbuj ponownie za chwilę.") from None
+    if provider.status_code == 404:
+        raise HTTPException(404, "Nie znaleziono miasta. Sprawdź pisownię lub dopisz kod kraju, np. Warsaw,PL.")
+    if provider.status_code in (401, 403):
+        raise HTTPException(503, "Dostawca pogody odrzucił konfigurację serwera. Skontaktuj się z administratorem.")
+    if provider.status_code == 429:
+        raise HTTPException(503, "Limit zapytań do pogody został osiągnięty. Spróbuj ponownie później.")
+    if provider.status_code != 200:
+        raise HTTPException(502, "Dostawca pogody jest chwilowo niedostępny. Spróbuj ponownie później.")
+    try:
+        data = provider.json()
+        if not isinstance(data, dict) or str(data.get("cod")) != "200":
+            raise ValueError("Niepoprawny kod odpowiedzi dostawcy")
+        details = data["weather"][0]
+        main = data["main"]
+        system = data.get("sys", {})
+        return Weather(
+            city=data["name"], country=system.get("country", ""),
+            temperature=main["temp"], feels_like=main["feels_like"],
+            description=details["description"], humidity=main["humidity"],
+            pressure=main["pressure"], wind_speed=data["wind"]["speed"],
+            visibility=data.get("visibility"), clouds=data.get("clouds", {}).get("all"),
+            condition_code=details["id"], is_day=not str(details.get("icon", "01d")).endswith("n"),
+            observed_at=data["dt"], sunrise=system.get("sunrise"), sunset=system.get("sunset"),
+            timezone_offset=data.get("timezone", 0),
+        )
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, ValidationError):
+        raise HTTPException(502, "Dostawca zwrócił niepełne dane pogodowe. Spróbuj ponownie za chwilę.") from None
 
-    data = get_openweather(city, key)
 
-    if data is None:
-        # Fallback: wttr.in
-        wttr_data = get_wttr(city)
-        if not wttr_data:
-            raise HTTPException(
-                status_code=502,
-                detail="Nie udało się pobrać danych ani z OpenWeatherMap, ani z wttr.in.",
-            )
-        return {
-            "source": "wttr.in",
-            "city": city,
-            "raw": wttr_data,
-        }
-
-    cod = data.get("cod")
-    if str(cod) == "404":
-        # Miasto nie istnieje w OWM, spróbuj wttr.in
-        wttr_data = get_wttr(city)
-        if not wttr_data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Miasto '{city}' nie znalezione w OWM, a wttr.in też zwrócił błąd.",
-            )
-        return {
-            "source": "wttr.in",
-            "city": city,
-            "raw": wttr_data,
-        }
-
-    main_section = data.get("main") or {}
-    weather_desc = ""
-    if isinstance(data.get("weather"), list) and data["weather"]:
-        weather_desc = data["weather"][0].get("description", "")
-
-    return {
-        "source": "openweathermap",
-        "city": city,
-        "temperature": main_section.get("temp"),
-        "feels_like": main_section.get("feels_like"),
-        "pressure": main_section.get("pressure"),
-        "humidity": main_section.get("humidity"),
-        "description": weather_desc,
-        "raw": data,
-    }
+@app.get("/weather", response_model=Weather, include_in_schema=False)
+@app.get("/api/weather", response_model=Weather, tags=["Pogoda"])
+def weather(
+    response: Response,
+    city: str = Query(..., min_length=1, max_length=100, description="Nazwa miasta, opcjonalnie z kodem kraju"),
+) -> Weather:
+    if any(ord(character) < 32 for character in city):
+        raise HTTPException(422, "Podaj poprawną nazwę miasta.")
+    city = city.strip()
+    if not city:
+        raise HTTPException(422, "Podaj poprawną nazwę miasta.")
+    response.headers["Cache-Control"] = "no-store"
+    return fetch_weather(city)
