@@ -199,3 +199,5 @@ jobs:
       - name: Show deployed container logs on failure
         if: failure()
         run: docker logs pogoda_api_deploy || true
+
+        
