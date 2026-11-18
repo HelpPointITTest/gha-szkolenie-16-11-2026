@@ -130,13 +130,16 @@ jobs:
             ${{ env.HUB_IMAGE_BASE }}:${{ github.sha }}
 
   # =====================
-  # 4. DEPLOY JOB (POKAZ NA TYMCZASOWYM RUNNERZE GITHUB)
+  # 4. DEPLOY JOB (STAŁY KONTENER NA RUNNERZE SELF-HOSTED)
   # =====================
-  # Kontener działa podczas joba. Nie jest to stały serwer aplikacji.
+  # Kolejny deploy zastępuje kontener, który pozostaje uruchomiony po jobie.
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: build-and-push
     timeout-minutes: 5
+    concurrency:
+      group: pogoda-api-deploy
+      cancel-in-progress: false
     env:
       IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
 
@@ -154,12 +157,21 @@ jobs:
           test -n "$IMAGE_DIGEST"
           docker pull "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
 
+      - name: Remove previous deployment container if it exists
+        run: |
+          # Uwzględnij także zatrzymany kontener i dopasuj tylko pełną nazwę.
+          existing_container="$(docker container ls --all --quiet --filter 'name=^/pogoda_api_deploy$')"
+          if [ -n "$existing_container" ]; then
+            docker rm --force "$existing_container"
+          fi
+
       - name: Run published container
         env:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           docker run -d \
             --name pogoda_api_deploy \
+            --restart unless-stopped \
             -p ${{ env.DOCKER_PORT_EXTERNAL }}:8000 \
             -e OPENWEATHER_API_KEY \
             "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
@@ -168,17 +180,22 @@ jobs:
         run: |
           # Lokalna kontrola startu FastAPI, bez wywoływania dostawcy pogody.
           curl --fail --silent --show-error \
-            --retry 15 --retry-connrefused --retry-delay 2 \
+            --retry 15 --retry-all-errors --retry-delay 2 \
             --retry-max-time 60 --max-time 5 \
             --output /dev/null \
             http://127.0.0.1:${{ env.DOCKER_PORT_EXTERNAL }}/openapi.json
           test "$(docker inspect --format '{{.State.Running}}' pogoda_api_deploy)" = true
           echo "Kontener pobrany z Docker Hub działa, a API odpowiada."
 
+      - name: Test deployed /weather endpoint via curl
+        run: |
+          echo "Testowanie wdrożonego endpointu /weather..."
+          # Aplikacja korzysta z OPENWEATHER_API_KEY przekazanego do kontenera.
+          curl --fail --silent --show-error --max-time 30 \
+            "http://127.0.0.1:${DOCKER_PORT_EXTERNAL}/weather?city=Warsaw"
+          echo
+          echo "OK - wdrożony endpoint /weather zwrócił odpowiedź bez błędu HTTP."
+
       - name: Show deployed container logs on failure
         if: failure()
         run: docker logs pogoda_api_deploy || true
-
-      - name: Remove demonstration container
-        if: always()
-        run: docker rm -f pogoda_api_deploy || true
