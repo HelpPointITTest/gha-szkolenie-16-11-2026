@@ -147,7 +147,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push image to Docker Hub
@@ -157,8 +157,8 @@ jobs:
           context: ${{ env.WORKDIR }}
           push: true
           tags: |
-            ${{ env.HUB_IMAGE_BASE }}:${{ env.DOCKERHUB_TAG }}
-            ${{ env.HUB_IMAGE_BASE }}:${{ github.sha }}
+            ${{ env.TEST_IMAGE }}:${{ env.DOCKERHUB_TAG }}
+            ${{ env.TEST_IMAGE }}:${{ github.sha }}
 
   deploy:
     runs-on: [self-hosted, linux]
@@ -198,11 +198,11 @@ jobs:
             exit 1
           fi
 
-          echo "Obraz: $HUB_IMAGE_BASE"
-          echo "Tag: $DOCKERHUB_TAG"
-          echo "Port: $DOCKER_PORT_EXTERNAL"
-          echo "Kontener: $DEPLOY_CONTAINER_NAME"
-          echo "Miasto: $WEATHER_CITY"
+          echo "Obraz: $env.HUB_IMAGE_BASE"
+          echo "Tag: $env.DOCKERHUB_TAG"
+          echo "Port: $env.DOCKER_PORT_EXTERNAL"
+          echo "Kontener: $env.DEPLOY_CONTAINER_NAME"
+          echo "Miasto: $env.WEATHER_CITY"
 
       - name: Print step variable scope
         env:
@@ -218,16 +218,16 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Pull published image from Docker Hub
-        run: docker pull "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
+        run: docker pull "${env.HUB_IMAGE_BASE}@${{ env.IMAGE_DIGEST }}"
 
       - name: Remove previous deployment container if it exists
         run: |
           # Nazwa została zweryfikowana przed użyciem w filtrze regex.
-          existing_container="$(docker container ls --all --quiet --filter "name=^/${DEPLOY_CONTAINER_NAME}$")"
+          existing_container="$(docker container ls --all --quiet --filter "name=^/${env.DEPLOY_CONTAINER_NAME}$")"
           if [ -n "$existing_container" ]; then
             docker rm --force "$existing_container"
           fi
@@ -237,11 +237,11 @@ jobs:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           docker run -d \
-            --name "$DEPLOY_CONTAINER_NAME" \
+            --name "${{ env.DEPLOY_CONTAINER_NAME }}" \
             --restart unless-stopped \
-            -p "${DOCKER_PORT_EXTERNAL}:8000" \
+            -p "${{ env.DOCKER_PORT_EXTERNAL }}:8000" \
             -e OPENWEATHER_API_KEY \
-            "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
+            "${{ env.HUB_IMAGE_BASE }}@${{ env.IMAGE_DIGEST }}"
 
       - name: Verify deployed API is ready
         run: |
@@ -249,19 +249,19 @@ jobs:
             --retry 15 --retry-all-errors --retry-delay 2 \
             --retry-max-time 60 --max-time 5 \
             --output /dev/null \
-            "$API_BASE_URL/openapi.json"
-          test "$(docker inspect --format '{{.State.Running}}' "$DEPLOY_CONTAINER_NAME")" = true
+            "${{ env.API_BASE_URL }}/openapi.json"
+          test "$(docker inspect --format '{{.State.Running}}' "${env.DEPLOY_CONTAINER_NAME}")" = true
           echo "Kontener działa, a API jest gotowe."
 
       - name: Test deployed /weather endpoint via curl
         run: |
-          echo "Testowanie wdrożonego endpointu /weather dla miasta: $WEATHER_CITY"
+          echo "Testowanie wdrożonego endpointu /weather dla miasta: ${env.WEATHER_CITY}"
           curl --fail --silent --show-error --max-time 30 \
-            --get --data-urlencode "city=$WEATHER_CITY" \
-            "$API_BASE_URL/weather"
+            --get --data-urlencode "city=${env.WEATHER_CITY}" \
+            "${env.API_BASE_URL}/weather"
           echo
           echo "OK - wdrożony endpoint /weather odpowiada."
 
       - name: Show deployed container logs on failure
         if: failure()
-        run: docker logs "$DEPLOY_CONTAINER_NAME" || true
+        run: docker logs "${env.DEPLOY_CONTAINER_NAME}" || true
