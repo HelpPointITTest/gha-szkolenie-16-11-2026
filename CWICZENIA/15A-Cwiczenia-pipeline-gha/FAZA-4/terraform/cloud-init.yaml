@@ -1,0 +1,13 @@
+#cloud-config
+# Bootstrap systemu zawiera wyłącznie publiczną konfigurację.
+# Sekrety aplikacji oraz rejestru dostarcza późniejszy krok deploy przez SSH.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - docker.io
+  - python3
+ssh_pwauth: false
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [docker, info]
