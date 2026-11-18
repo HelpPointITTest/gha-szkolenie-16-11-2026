@@ -16,14 +16,18 @@ SSH dla `dev` i `prod` — nie przygotowujesz ich ręcznie.
 | --- | --- |
 | [15A-FAZA4-pogoda.yaml](../../../.github/workflows/15A-FAZA4-pogoda.yaml) | Gotowy workflow w `.github/workflows/` |
 | [terraform/](terraform/) | Wspólny kod infrastruktury dla `dev` i `prod` |
+| [terraform/application.tf](terraform/application.tf) | Deploy kontenera przez `terraform_data` i provisionery `remote-exec` |
 | [scripts/prepare_job.py](scripts/prepare_job.py) | Sprawdzenie i zachowanie ścieżek, workspace oraz wejść przebiegu |
 | [scripts/read_release.py](scripts/read_release.py) | Sprawdzenie metadanych obrazu i publicznych wyników Terraform |
-| [scripts/deploy_remote.py](scripts/deploy_remote.py) | Uruchomienie kontenera na VM przez SSH |
 
 Joby infrastruktury działają na jednym self-hosted runnerze i wykonują
-Terraform, który tworzy zasoby przez API DigitalOcean. Deploy uruchamia
-aplikację przez SSH z tego runnera na VM. Jest to wykonanie przez SSH,
-bez Ansible. Build, test i publikację obrazu realizują joby GitHub Actions.
+Terraform, który tworzy zasoby przez API DigitalOcean i w tym samym `apply`
+uruchamia aplikację na VM przez SSH, za pomocą `remote-exec`. To deploy
+wykonywany przez Terraform, bez Ansible i bez osobnego skryptu Python
+sterującego kontenerem. Build, test, publikację oraz końcową publiczną
+weryfikację WWW/API realizują joby GitHub Actions. Skrypty pomocnicze
+przygotowują ścieżki i metadane. Ręczne usuwanie infrastruktury wykonują
+polecenia Terraform zapisane bezpośrednio w YAML workflow.
 
 **Dopiero uruchomienie joba `apply` przez słuchacza tworzy płatne zasoby
 DigitalOcean.** Samo przygotowanie plików lub `terraform validate` ich nie tworzy.
@@ -48,8 +52,8 @@ Na VM port hosta `80` kieruje do Nginxa na `8080` wewnątrz kontenera.
 
 1. W **Settings → Actions → Runners** sprawdź, czy Twój runner Linux jest
    dostępny jako **Idle**.
-2. Dodaj mu etykietę **`pogoda-state`**. Przypisz ją dokładnie jednemu runnerowi,
-   na którego dysku ma pozostać stan Terraform.
+2. W tym ćwiczeniu korzystaj z jednego self-hosted runnera Linux, na którego
+   dysku pozostaje stan Terraform. Dodatkowa etykieta nie jest potrzebna.
 3. Sprawdź, czy konto usługi runnera ma dostęp do Dockera i poleceń `git`,
    `python3`, `ssh`, `ssh-keygen`, `curl` oraz `unzip`.
 4. Dopuść połączenia wychodzące HTTPS do GitHub, rejestru Terraform,
@@ -61,12 +65,12 @@ Na VM port hosta `80` kieruje do Nginxa na `8080` wewnątrz kontenera.
 Joby infrastruktury mają:
 
 ```yaml
-runs-on: [self-hosted, linux, pogoda-state]
+runs-on: [self-hosted, linux]
 ```
 
-Etykieta kieruje kolejne joby na ten sam komputer. Samo `[self-hosted, linux]`
-nie wystarczyłoby po dodaniu kolejnego runnera. Build i test nadal korzystają
-z `ubuntu-latest`.
+Konfiguracja używa Twojego jednego runnera Linux. Kolejne joby odczytują
+lokalne pliki z jego dysku, dlatego muszą działać na tym samym komputerze.
+Build i test nadal korzystają z `ubuntu-latest`.
 
 ## Krok 3. Przygotuj trwały katalog stanu
 
@@ -202,6 +206,21 @@ Klucze SSH wygeneruje Terraform; nie dodawaj sekretu `DO_SSH_PRIVATE_KEY`.
 Istniejące reguły zatwierdzania Environment mogą wstrzymywać joby; pipeline
 ich nie omija.
 
+Możesz dodatkowo ustawić Environment variable **`FAZA4_SSH_HOST_KEY`**
+osobno w `dev` i `prod`. Wartością jest zaufany **publiczny klucz serwera SSH
+danej VM**, np. pełna linia `ssh-ed25519 AAAA...`, uzyskana z konsoli VM
+lub wcześniej zweryfikowanego wpisu `known_hosts`. Nie wpisuj przykładowego
+`AAAA...` jako rzeczywistej wartości. To klucz hosta VM, a nie publiczna część
+pary logowania generowanej przez Terraform.
+
+Jeżeli zmienna jest pusta, natywne połączenie SSH provisionera Terraform
+**nie weryfikuje klucza serwera**. Taki jest domyślny wariant laboratoryjny
+tej konfiguracji; nie korzysta on automatycznie z wcześniejszego `known_hosts`
+ani mechanizmu `accept-new`. Podanie zaufanego `FAZA4_SSH_HOST_KEY` włącza
+weryfikację przez `connection.host_key`. Po odtworzeniu VM klucz hosta może
+się zmienić — zweryfikuj nową wartość przed kolejnym deployem.
+[Połączenia provisionerów Terraform](https://developer.hashicorp.com/terraform/language/provisioners).
+
 ## Krok 7. Sprawdź automatyczne generowanie kluczy SSH
 
 1. W gotowym Terraform znajdź zasób `tls_private_key` używający `ED25519`.
@@ -212,15 +231,17 @@ ich nie omija.
 4. Zachowaj stan każdego workspace: przechowuje zarówno identyfikatory
    infrastruktury, losowy sufiks nazw, jak i wygenerowaną parę kluczy.
 
-Zwykły kolejny przebieg wykorzystuje istniejące klucze ze stanu. Job zdalnego
-deploya odczytuje wyłącznie nazwany, wrażliwy output `ssh_private_key_openssh`
-bezpośrednio do tymczasowego pliku `0600`; po deployu usuwa ten plik.
+Zwykły kolejny przebieg wykorzystuje istniejące klucze ze stanu.
+`connection.private_key` provisionera odczytuje wygenerowaną prywatną część
+bezpośrednio w Terraform. Workflow nie eksportuje jej do osobnego pliku SSH.
 Nie wykonuj `terraform output -json` dla wszystkich outputów: taka komenda
 mogłaby ujawnić klucz również pomimo oznaczenia `sensitive`.
 
 Klucz prywatny pozostaje w chronionym stanie i może być również zawarty
-w zapisanym planie. Czyszczenie tymczasowego pliku SSH nie usuwa go ze stanu,
-ponieważ następny deploy ma ponownie skorzystać z tej samej pary.
+w zapisanym planie. Następny deploy ma ponownie skorzystać z tej samej pary.
+Token Docker Hub i klucz OpenWeather są obsługiwane inaczej: provisioner
+otrzymuje je jako zmienne `ephemeral` i `sensitive`, bez utrwalania w stanie
+lub pliku planu.
 
 ## Krok 8. Sprawdź workflow w katalogu GitHub Actions
 
@@ -270,19 +291,23 @@ unikają nadpisywania wspólnego outputu przez warianty macierzy.
 
 ## Krok 11. Wykonaj `init` jako osobny job
 
-Job infrastruktury `init` działa przez matrix dla `dev` i `prod`, na runnerze
-`pogoda-state` i z właściwym GitHub Environment.
+Job infrastruktury `init` działa przez matrix dla `dev` i `prod`, na Twoim
+self-hosted runnerze Linux i z właściwym GitHub Environment.
 
 1. Udostępnia Terraform `1.17.2` przez `hashicorp/setup-terraform@v3`.
 2. Sprawdza katalog stanu i przygotowuje trwałe pliki robocze bieżącego
    przebiegu poza checkoutem.
-3. Korzysta z tego samego kodu z checkoutu i przygotowuje zmienne niesekretne:
-   środowisko, identyfikator słuchacza, region, rozmiar VM oraz CIDR SSH.
-4. Konfiguruje backend `local`, wskazując `workspace_dir` na trwały katalog
+3. Pobiera metadane opublikowanego obrazu swojego środowiska i sprawdza ich
+   zgodność z tagiem, commitem oraz bieżącym przebiegiem.
+4. Korzysta z tego samego kodu z checkoutu i przygotowuje zmienne niesekretne:
+   środowisko, identyfikator słuchacza, region, rozmiar VM, CIDR SSH,
+   `image_reference` z digestem, login Docker Hub i `deployment_id`
+   bieżącego przebiegu. Opcjonalnie dodaje zaufany `ssh_host_key`.
+5. Konfiguruje backend `local`, wskazując `workspace_dir` na trwały katalog
    `workspaces` tego repozytorium i słuchacza.
-5. Wykonuje `terraform init` oraz `terraform workspace select -or-create`
+6. Wykonuje `terraform init` oraz `terraform workspace select -or-create`
    dla `dev` albo `prod`.
-6. Pierwsze `init` pobiera przypięte wersje providerów i tworzy lockfile.
+7. Pierwsze `init` pobiera przypięte wersje providerów i tworzy lockfile.
    Pipeline zachowuje `.terraform.lock.hcl` przy trwałym `TF_DATA_DIR` danego
    środowiska i odtwarza go po checkoutach następnych jobów. Dzięki temu
    czyszczenie checkoutu nie usuwa informacji potrzebnych do `validate`,
@@ -312,16 +337,24 @@ na trwałym dysku jednego przypisanego runnera.
 
 1. Job `plan` zależy od sukcesu `validate`.
 2. Używa tego samego kodu, workspace i pliku stanu.
-3. Otrzymuje token w `DIGITALOCEAN_TOKEN`.
+3. Otrzymuje token w `DIGITALOCEAN_TOKEN` oraz sekrety aplikacji przez
+   `TF_VAR_dockerhub_token` i `TF_VAR_openweather_api_key`.
 4. Wykonuje `terraform plan` i zapisuje plan na dysku runnera, w katalogu
    bieżącego przebiegu.
 5. Przejrzyj w logu planowane zasoby i nazwy VM.
 
 Pierwszy plan pokaże infrastrukturę wybranego środowiska, generowanie pary
-kluczy SSH, rejestrację klucza publicznego, firewall i zasób losowego sufiksu.
-Kod nie tworzy VPC i nie zarządza
-infrastrukturą `test`. Planu nie uploadujemy do GitHub jako artefaktu;
+kluczy SSH, rejestrację klucza publicznego, firewall, losowy sufiks i
+`terraform_data.application`, który uruchomi provisionery aplikacji.
+Kod nie tworzy VPC i nie zarządza infrastrukturą `test`.
+Planu nie uploadujemy do GitHub jako artefaktu;
 kolejny job wykorzystuje lokalny plik właściwego przebiegu i środowiska.
+
+Obie zmienne `TF_VAR_*` są zadeklarowane jako `ephemeral = true` oraz
+`sensitive = true`. Nie są zapisywane w planie i stanie. Trzeba przekazać je
+zarówno w `plan`, jak i ponownie w `apply` — zapisany plan wymaga ponownego
+dostarczenia użytych zmiennych ephemeral. Nie przenoś ich do pliku `tfvars`.
+[Wartości ephemeral w provisionerach](https://developer.hashicorp.com/terraform/language/provisioners#ephemeral-values).
 
 ## Krok 14. Wykonaj `apply` jako osobny job
 
@@ -329,8 +362,23 @@ kolejny job wykorzystuje lokalny plik właściwego przebiegu i środowiska.
 2. Sprawdza workspace i wykonuje `terraform apply` dla **zapisanego planu**.
 3. Terraform tworzy lub uzgadnia parę kluczy SSH, VM, klucz publiczny
    zarejestrowany w DigitalOcean oraz firewall.
-4. Zapisuje stan niezależnie dla `dev` i `prod`.
-5. Odczytuje `public_ip`, `droplet_id` i `app_url` do dalszego deploya.
+4. `terraform_data.application` wykonuje `remote-exec` przez SSH: czeka na
+   bootstrap VM, pobiera opublikowany obraz i uruchamia kontener.
+5. Zapisuje stan niezależnie dla `dev` i `prod`.
+6. Odczytuje tylko publiczne `public_ip`, `droplet_id`, `app_url` dla
+   późniejszej weryfikacji. Nie eksportuje prywatnego klucza do metadanych.
+
+Job `apply` ponownie dostarcza `TF_VAR_dockerhub_token` i
+`TF_VAR_openweather_api_key` ze swoich GitHub Secrets. Provisioner korzysta
+z nich w czasie wykonania. Kodowanie Base64 w skrypcie chroni składnię powłoki
+przed znakami specjalnymi; nie jest szyfrowaniem. Transmisję chroni SSH.
+
+Zmiana VM, digestu obrazu lub `deployment_id` wymusza ponowne wykonanie
+provisionerów aplikacji. Nowy przebieg workflow dostaje nowy identyfikator,
+więc może ponowić deploy tego samego obrazu. Nieudany provisioner oznacza
+nieudany `apply` i ponowienie zasobu `terraform_data`; sam ten błąd nie wymaga
+odtwarzania VM. Kontener jest uruchamiany przez polecenia provisionera,
+a nie reprezentowany jako zasób osobnego providera Docker.
 
 Cloud-init instaluje `docker.io`, `python3`, `curl` i certyfikaty CA,
 a następnie włącza Dockera. Nie zawiera obrazu aplikacji ani sekretów.
@@ -360,38 +408,45 @@ Grupa `pogoda-faza3-deploy-test` zapobiega jednoczesnej podmianie tego samego
 kontenera przez deploy testowy z FAZY-3 i FAZY-4. Job nie używa Terraform,
 workspace ani tokenu DigitalOcean.
 
-## Krok 16. Uruchom zdalny deploy `dev` i `prod`
+## Krok 16. Sprawdź deploy przez Terraform i publiczną weryfikację
 
-Macierz zdalnego deploya działa na runnerze `pogoda-state`, po udanym `apply`.
-Dla każdego Environment wykonuje:
+W `apply` każdego środowiska natywne provisionery Terraform wykonują:
 
-1. Sprawdzenie zgodności digestu obrazu i adresu VM z przebiegiem oraz środowiskiem.
-2. Odczyt wygenerowanego prywatnego klucza SSH ze stanu do tymczasowego
-   pliku z prawami `0600`.
-3. Połączenie SSH z VM i oczekiwanie na zakończenie cloud-init.
-4. Logowanie Docker Hub na VM w osobnym tymczasowym katalogu konfiguracji.
-5. Pobranie obrazu po digescie; błąd pobierania pozostawia obecny kontener.
-6. Usunięcie tylko poprzedniego `pogoda_api_faza4_dev` lub `pogoda_api_faza4_prod`.
-7. Uruchomienie nowego z `--restart unless-stopped`, mapowaniem `80:8080`
-   oraz kluczem pogody przekazanym wyłącznie przy uruchamianiu.
-8. Sprawdzenie `/healthz` i stanu kontenera.
-9. Wylogowanie Docker Hub i usunięcie katalogu z tokenem na VM, także przy błędzie.
-10. Sprawdzenie publicznego WWW oraz prawdziwego zapytania API z runnera.
-11. Zapisanie URL w podsumowaniu joba i przy GitHub Environment.
-12. Usunięcie tymczasowego prywatnego klucza na runnerze.
+1. Połączenie SSH z VM i ograniczone czasem oczekiwanie na cloud-init.
+2. Odczyt wyniku bootstrapu. Kod `0` oznacza sukces. Kod `2` z zakończonym
+   statusem `done` oznacza problemy możliwe do odzyskania: pipeline pokazuje
+   diagnostykę i wymaga dodatkowo działającej usługi Docker oraz `docker info`.
+   Błąd krytyczny, brak zakończenia lub timeout zatrzymuje deploy.
+3. Logowanie Docker Hub na VM w osobnym tymczasowym katalogu konfiguracji.
+4. Pobranie obrazu po digescie; błąd pobierania pozostawia obecny kontener.
+5. Usunięcie poprzedniego `pogoda_api_faza4_dev` albo `pogoda_api_faza4_prod`
+   i uruchomienie nowego z `--restart unless-stopped` oraz mapowaniem `80:8080`.
+6. Przekazanie klucza pogody dopiero przy `docker run`, bez umieszczania go
+   w obrazie lub cloud-init.
+7. Sprawdzenie `/healthz` i stanu kontenera na VM.
+8. Wylogowanie Docker Hub i usunięcie tymczasowego katalogu z tokenem oraz
+   skryptu zawierającego dane dostępowe, także przy błędzie wykonania skryptu.
 
-Token Docker Hub i klucz OpenWeather przechodzą przez szyfrowane stdin SSH.
-Te wartości oraz token DigitalOcean nie trafiają do stanu, planu, cloud-init,
-obrazu ani cache. **Wyjątkiem jest para SSH wygenerowana w Terraform:** jej
-prywatna część znajduje się w stanie i może znajdować się w planie, zgodnie
-z krokiem 7. Żaden z tych sekretów nie jest argumentem polecenia SSH.
+Skrypt provisionera trafia do prywatnego katalogu `/root`. Zawierająca sekrety
+część jest oznaczona jako sensitive; Terraform ukrywa jej wyjście w logu.
+Token Docker Hub, klucz OpenWeather i token DigitalOcean nie trafiają do stanu,
+planu, cloud-init, obrazu ani cache. Prywatna część **pary SSH generowanej
+w Terraform** pozostaje w chronionym stanie i może być zawarta w planie.
 
-Przy pierwszym połączeniu pipeline zapamiętuje klucz hosta VM w trwałym
-`known_hosts`. Następne połączenia sprawdzają jego zgodność. Alias zawiera
-ID Dropleta, więc nowa VM otrzyma osobny wpis. Jest to zaufanie przy pierwszym
-połączeniu, a nie wcześniejsze potwierdzenie fingerprintu innym kanałem.
-Zmiany klucza tej samej VM pipeline nie akceptuje.
-[Opcja `accept-new` w OpenSSH](https://man.openbsd.org/ssh_config#StrictHostKeyChecking).
+Po sukcesie `apply` startuje macierz **Verify DigitalOcean**. Zachowany
+identyfikator joba to `deploy-digitalocean`, ale jego zadaniem jest teraz
+wyłącznie weryfikacja publicznego adresu. Job:
+
+1. Sprawdza zgodność metadanych obrazu i publicznych wyników Terraform
+   ze środowiskiem i bieżącym przebiegiem.
+2. Sprawdza publiczne `/healthz`, WWW oraz prawdziwe zapytanie pogodowe API.
+3. Zapisuje działający URL w podsumowaniu i przy GitHub Environment.
+
+Nie wykonuje SSH, nie instaluje providerów i nie uruchamia ponownie kontenera.
+W tej fazie kod `2` cloud-init sam w sobie nie dowodzi awarii ani konkretnej
+przyczyny ostrzeżenia; służy temu pokazana diagnostyka. Działanie aplikacji
+potwierdza dopiero test Docker i końcowe WWW/API.
+[Kody zakończenia cloud-init](https://docs.cloud-init.io/en/latest/explanation/failure_states.html).
 
 HTTP jest protokołem tego ćwiczenia. Aplikacja nadal pozwala przygotować
 HTTPS, ale domeny, certyfikaty i port TLS nie wchodzą w tę fazę.
@@ -399,12 +454,19 @@ HTTPS, ale domeny, certyfikaty i port TLS nie wchodzą w tę fazę.
 ## Krok 17. Uruchom pipeline i odczytaj URL
 
 1. Otwórz **Actions → workflow FAZY-4 → Run workflow**.
-2. Wybierz gałąź zgodną z `FAZA4_DEPLOY_BRANCH` i uruchom przebieg.
+2. Wybierz gałąź zgodną z `FAZA4_DEPLOY_BRANCH`, ustaw **operation: deploy**
+   i uruchom przebieg. Jest to domyślna operacja.
 3. Sprawdź wspólne `build` i `test`, potem trzy publikacje.
 4. Otwórz osobne joby `init`, `validate`, `plan`, `apply` dla `dev` i `prod`.
    Sprawdź workspace oraz runner każdego wariantu.
-5. Sprawdź deploy testowy i dwa zdalne deploye.
-6. Z podsumowań udanych deployów skopiuj adresy `http://<IP_VM>/`.
+5. Sprawdź deploy testowy, wykonanie provisionerów w obu `apply` i dwa joby
+   **Verify DigitalOcean**.
+6. Z podsumowań udanych weryfikacji skopiuj adresy `http://<IP_VM>/`.
+
+Po poprawieniu kodu wyślij nowy commit i uruchom **nowy Run workflow**
+z `operation: deploy` na gałęzi zawierającej zmianę. **Re-run jobs** starego
+przebiegu używa jego wcześniejszego commita i nie pobierze poprawki.
+Nowy przebieg daje też nowy `deployment_id`, wymuszający ponowienie deploya.
 
 Dla `dev` i `prod` używaj IP właściwej VM, a nie runnera. Przykładowo dla
 zwróconego `203.0.113.20` byłoby to `http://203.0.113.20/`, bez dopisywania
@@ -428,7 +490,8 @@ test WWW i API potwierdza działającą aplikację pod tym adresem.
    oraz firewall przypisany do każdej z nich.
 5. Na runnerze sprawdź dwa pliki `terraform.tfstate`: w `workspaces/dev/`
    oraz `workspaces/prod/`.
-6. Uruchom cały workflow ponownie bez zmiany kodu. Build powinien użyć cache,
+6. Uruchom nowy **Run workflow → operation: deploy** bez zmiany kodu.
+   Build powinien użyć cache,
    Terraform zachować VM i sufiksy nazw, a deploy podmienić właściwe kontenery.
 7. Zmień `FAZA4_WEATHER_CITY` tylko w Environment `dev`, np. na `Gdansk`,
    i sprawdź, czy test tego środowiska używa nowej wartości.
@@ -437,14 +500,15 @@ test WWW i API potwierdza działającą aplikację pod tym adresem.
 
 | Objaw | Co sprawdzić |
 | --- | --- |
-| Job czeka na runnera | Czy dokładnie jeden dostępny runner ma etykietę `pogoda-state` |
+| Job czeka na runnera | Czy Twój self-hosted runner Linux jest online i dostępny dla repozytorium |
 | Brak znacznika katalogu stanu | Czy krok 3 wykonano jako konto usługi runnera i ustawiono poprawny pełny `FAZA4_STATE_ROOT` |
 | Brak wcześniejszego stanu | Przywróć właściwy stan; nie obchodź kontroli nowym pustym katalogiem |
 | `403` z DigitalOcean | Zakres, ważność i konto tokenu `DIGITALOCEAN_TOKEN` |
 | Klucz SSH już istnieje | Właściwy zachowany stan; nie rejestruj ponownie kluczy po utracie stanu |
 | SSH nie odpowiada | Publiczny adres runnera, CIDR `/32`, firewall, właściwy workspace i wygenerowany klucz ze stanu |
-| Niezgodny klucz hosta SSH | Tożsamość VM; nie wyłączaj sprawdzania klucza hosta |
-| Błąd cloud-init | Instalację pakietów i dostęp VM do repozytoriów Ubuntu |
+| Niezgodny klucz hosta SSH | Tożsamość VM i zaufany `FAZA4_SSH_HOST_KEY` właściwego Environment; nie podstawiaj klucza logowania zamiast klucza serwera |
+| Cloud-init kończy się kodem `2` i `done` | Diagnostykę `status --long`, działanie Dockera oraz wynik WWW/API; sam kod nie wskazuje konkretnej przyczyny ostrzeżeń |
+| Krytyczny błąd cloud-init lub timeout | Instalację pakietów, dostęp VM do repozytoriów Ubuntu i logi bootstrapu |
 | `docker pull` odrzucony | Prawo odczytu obrazu, login i token Docker Hub |
 | `/healthz` działa, pogoda nie | Aktywność i limit prawdziwego klucza OpenWeather, miasto, dostęp VM do API |
 | URL VM nie działa | Sukces publicznego testu po deployu, IP właściwej VM i regułę TCP80 |
@@ -455,7 +519,8 @@ wykryć utratę poprzedniego stanu, ale nie zastępują kopii zapasowej.
 
 Wykonuj kopię katalogu repozytorium i słuchacza w `FAZA4_STATE_ROOT`, gdy
 workflow nie pracuje. Zachowaj stany `dev` i `prod`, kopie `.backup`, znaczniki
-oraz zapisane klucze hostów SSH. Backup przechowuj poza checkoutem i poza Git.
+oraz ewentualne wcześniej zapisane zaufane klucze hostów SSH.
+Backup przechowuj poza checkoutem i poza Git.
 Nie usuwaj `runs/<run_id>` w trakcie przebiegu: zawiera konfigurację,
 `TF_DATA_DIR` i plan potrzebny następnym jobom.
 
@@ -464,9 +529,74 @@ i odtwórz poprawny stan albo uzgodnij import z prowadzącym. Pusty stan
 nie oznacza pustego konta DigitalOcean.
 
 Po szkoleniu uzgodnij z prowadzącym usunięcie płatnych VM i ich zasobów
-przez Terraform, osobno dla `dev` i `prod`, z zachowanymi stanami. Nie kasuj
-stanu jako sposobu usuwania infrastruktury. Ten workflow nie wykonuje
-samoczynnego `destroy`.
+przez ręczną operację `destroy` opisaną poniżej. Nie kasuj stanu jako sposobu
+usuwania infrastruktury. Zwykły push i operacja `deploy` nie wykonują `destroy`.
+
+## Krok 20. Usuń równocześnie infrastrukturę `dev` i `prod`
+
+W tym samym workflow jest ręczna operacja usuwająca **obie VM DigitalOcean**,
+ich firewalle, zarejestrowane klucze SSH, zasób aplikacji `terraform_data`
+oraz zasoby kluczy i losowych sufiksów zarządzane przez oba stany Terraform.
+Kontener `test` na runnerze pozostaje.
+
+1. Zachowaj na runnerze oba istniejące pliki stanu, ich workspace oraz te same
+   wartości `FAZA4_STATE_ROOT` i `FAZA4_STUDENT_NAME`.
+2. Otwórz **Actions → 15A FAZA-4 — Terraform workspaces i DigitalOcean → Run workflow**.
+3. Wybierz gałąź zgodną z `FAZA4_DEPLOY_BRANCH`.
+4. W polu **operation** wybierz **destroy** i uruchom workflow.
+   Ten wybór uruchamia usuwanie obu środowisk; nie ma osobnego wyboru VM.
+5. Sprawdź job **Terraform destroy (dev i prod równocześnie)**. Build, test,
+   publikacja i deploy będą pominięte.
+6. W logach odszukaj komunikaty z prefiksami `[dev]` i `[prod]`, a w podsumowaniu
+   sprawdź wynik dla każdego środowiska.
+7. W DigitalOcean sprawdź, że zniknęły obie VM oraz ich firewalle i klucze SSH.
+   Pliki stanu i workspace pozostają na runnerze; po sukcesie stany nie zawierają
+   zarządzanych zasobów.
+
+Job uruchamia się na tym samym self-hosted runnerze Linux. Jeden runner wykonywałby
+dwa joby macierzy kolejno, dlatego tutaj jeden job uruchamia **dwa procesy
+Terraform równolegle przez Bash w kroku `run:` YAML**. Każdy otrzymuje własny
+katalog roboczy, `TF_DATA_DIR` i workspace, a używa istniejącego pliku stanu
+swojego środowiska. Kod źródłowy
+Terraform jest wspólny. Powłoka uruchamia oba procesy w tle, zapamiętuje ich
+identyfikatory i czeka na zakończenie obu przez `wait`.
+
+Przed uruchomieniem któregokolwiek polecenia Terraform krok przygotowania
+sprawdza obecność i poprawność **obu** stanów przez istniejący
+`prepare_job.py destroy`. Ten helper przygotowuje tylko ścieżki i konfigurację.
+Brak lub uszkodzenie jednego stanu zatrzymuje operację przed wywołaniem Terraform.
+
+Właściwe polecenia są zapisane bezpośrednio w jobie **Terraform destroy**.
+Każdy proces wykonuje `terraform init`, wybór istniejącego workspace bez
+`-or-create`, `terraform validate`, a następnie:
+
+```bash
+terraform destroy -auto-approve
+```
+
+Workflow dodaje do polecenia opcje automatyzacji, blokady stanu i plik zmiennych
+właściwego środowiska. Na końcu sprawdza pustą listę zasobów.
+Pliki state i workspaces pozostają na runnerze.
+
+Operacja używa GitHub Environment **`prod`** i respektuje jego istniejące reguły
+dostępu. Wystarczy dotychczasowy `DIGITALOCEAN_TOKEN` z prawem usunięcia zasobów
+obu środowisk. Jeśli nadpisujesz ten sekret w Environment `prod`, jego wartość
+musi mieć dostęp do obu VM. Pozostałe zmienne infrastruktury są te same co
+dla deploya. Nie potrzeba nowych vars/secrets ani tokenu Docker Hub czy klucza
+OpenWeather do tej operacji.
+
+Zmienne aplikacji mają wartości domyślne `null`, a provisionery aplikacji
+działają przy tworzeniu, nie przy usuwaniu. `destroy` może więc usunąć zasoby
+bez dostarczania sekretów aplikacji i bez uruchamiania kontenera.
+
+Wspólna grupa concurrency workflow zapobiega równoczesnemu deployowi i destroy.
+Jeżeli usuwanie jednego środowiska nie powiedzie się, drugie może się zakończyć;
+job po zakończeniu obu zwróci błąd. Zachowaj stany i ponów `operation: destroy`
+po usunięciu przyczyny. Sam błąd nie odtwarza już usuniętych zasobów.
+
+Kolejne uruchomienie z `operation: deploy` utworzy infrastrukturę ponownie,
+z nowymi losowymi sufiksami, kluczami SSH i potencjalnie innymi IP.
+[Dokumentacja polecenia destroy](https://developer.hashicorp.com/terraform/cli/commands/destroy).
 
 ## Kryteria ukończenia
 
@@ -474,13 +604,17 @@ samoczynnego `destroy`.
 - Ten sam obraz opublikowany dla `test`, `dev`, `prod`.
 - `init`, `validate`, `plan`, `apply` jako osobne joby GitHub Actions.
 - Osobne VM oraz lokalne stany Terraform dla `dev` i `prod`.
+- Deploy kontenera `dev` i `prod` wykonywany przez Terraform `remote-exec`
+  podczas `apply`, z późniejszą publiczną weryfikacją WWW/API w GitHub Actions.
 - `test` nadal na runnerze, z konfiguracją FAZY-3.
 - WWW i rzeczywiste API sprawdzone przez pipeline oraz słuchacza.
 - Podsumowania udanych deployów zawierają URL z publicznymi IP VM.
 - Kolejny przebieg zachowuje infrastrukturę i podmienia kontenery.
-- Tokeny i klucz pogody pozostają poza obrazem oraz Terraform. Stan i plany
-  z wygenerowanymi kluczami SSH są chronione na runnerze; tymczasowe logowania
-  Docker Hub i pliki kluczy SSH są sprzątane.
+- Ręczne `operation: destroy` usuwa równocześnie `dev` i `prod` i zachowuje lokalny `test`.
+- Token Docker Hub i klucz pogody są ephemeral oraz sensitive w Terraform,
+  poza zapisanym stanem, planem i obrazem. Stan i plany z wygenerowanymi
+  kluczami SSH są chronione na runnerze; tymczasowe logowania Docker Hub
+  i skrypty z sekretami na VM są sprzątane.
 
 Przygotowanie materiału i lokalna walidacja nie są wykonaniem `apply` ani
 dowodem działania na DigitalOcean. Realny wynik potwierdza udany przebieg

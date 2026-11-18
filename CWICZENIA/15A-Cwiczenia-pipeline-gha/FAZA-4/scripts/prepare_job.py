@@ -47,8 +47,8 @@ def write_json(path, value):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ('init', 'existing'):
-        raise ValueError('Użycie: prepare_job.py init|existing')
+    if len(sys.argv) != 2 or sys.argv[1] not in ('init', 'existing', 'destroy'):
+        raise ValueError('Użycie: prepare_job.py init|existing|destroy')
     mode = sys.argv[1]
     environment = required('TARGET_ENVIRONMENT')
     if environment not in ('dev', 'prod'):
@@ -78,6 +78,20 @@ def main():
         raise ValueError('Brak .faza4-state-root. Przygotuj trwały katalog stanu zgodnie z instrukcją; nie twórz przypadkowo nowego state.')
     regular_file(marker)
 
+    if mode == 'destroy':
+        # Destruction must reuse an existing workspace and state. It must never
+        # create a new environment when a runner path or student slug is wrong.
+        existing_directory = root
+        for component in (repository, student, 'workspaces', environment):
+            existing_directory = protected_directory(existing_directory / component, create=False)
+        existing_state = existing_directory / 'terraform.tfstate'
+        if not existing_state.exists():
+            raise ValueError(f'Brak istniejącego state dla {environment}; przerwano przygotowanie destroy.')
+        regular_file(existing_state)
+        state = json.loads(existing_state.read_text())
+        if not isinstance(state, dict) or not isinstance(state.get('version'), int):
+            raise ValueError('Istniejący plik state nie jest poprawnym stanem Terraform.')
+
     repository_directory = protected_directory(root / repository)
     state_directory = protected_directory(repository_directory / student)
     workspace_directory = protected_directory(state_directory / 'workspaces')
@@ -102,13 +116,13 @@ def main():
     for name in ('terraform-data', 'plans', 'inputs', 'releases', 'manifests'):
         paths[name] = protected_directory(run_directory / name)
     data_directory = paths['terraform-data'] / environment
-    protected_directory(data_directory, create=mode == 'init')
+    protected_directory(data_directory, create=mode in ('init', 'destroy'))
     known_hosts_directory = protected_directory(state_directory / 'known-hosts')
     variables_file = paths['inputs'] / f'{environment}.tfvars.json'
     manifest_file = paths['manifests'] / f'{environment}.json'
     identity = {'repository_id': repository, 'student_name': student, 'run_id': run_id, 'commit': commit, 'environment': environment}
 
-    if mode == 'init':
+    if mode in ('init', 'destroy'):
         cidr = required('FAZA4_SSH_ALLOWED_CIDR')
         network = ipaddress.IPv4Network(cidr, strict=True)
         if network.prefixlen != 32:
@@ -121,6 +135,26 @@ def main():
             'environment': environment, 'student_name': student, 'region': region,
             'droplet_size': size, 'ssh_allowed_cidr': str(network),
         }
+        if mode == 'init':
+            tag = required('IMAGE_TAG')
+            if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,86}', tag):
+                raise ValueError('Nieprawidłowy FAZA4_IMAGE_TAG.')
+            release = json.loads(Path('release-metadata/release.json').read_text())
+            expected = {
+                'environment': environment, 'image_tag': tag,
+                'commit': commit, 'run_id': run_id,
+            }
+            if not isinstance(release, dict) or any(release.get(name) != value for name, value in expected.items()):
+                raise ValueError('Metadane obrazu nie odpowiadają środowisku i przebiegowi.')
+            digest = release.get('image_digest')
+            if not isinstance(digest, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+                raise ValueError('Nieprawidłowy digest opublikowanego obrazu.')
+            variables.update({
+                'image_reference': required('HUB_IMAGE_BASE') + '@' + digest,
+                'dockerhub_username': required('DOCKERHUB_USERNAME'),
+                'deployment_id': run_id,
+                'ssh_host_key': os.environ.get('FAZA4_SSH_HOST_KEY') or None,
+            })
         if manifest_file.exists():
             regular_file(manifest_file)
             previous = json.loads(manifest_file.read_text())

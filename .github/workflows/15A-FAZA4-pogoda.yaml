@@ -2,6 +2,15 @@ name: 15A FAZA-4 — Terraform workspaces i DigitalOcean
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: 'deploy: wdrożenie; destroy: usuń infrastrukturę dev i prod'
+        type: choice
+        required: true
+        default: deploy
+        options:
+          - deploy
+          - destroy
   push:
     branches: [main]
     paths:
@@ -12,7 +21,7 @@ on:
 permissions:
   contents: read
 
-# Chroni cały łańcuch init → validate → plan → apply, również pomiędzy przebiegami.
+# Chroni cały łańcuch deploy oraz destroy, również pomiędzy przebiegami.
 concurrency:
   group: pogoda-faza4-${{ github.repository_id }}
   cancel-in-progress: false
@@ -31,7 +40,7 @@ defaults:
 # FAZA4_REGION=fra1; FAZA4_DROPLET_SIZE=s-1vcpu-1gb
 # FAZA4_SSH_ALLOWED_CIDR=<PUBLICZNE_IP_RUNNERA>/32, np. 203.0.113.10/32 (przykład!)
 # Repository secrets: DIGITALOCEAN_TOKEN, DOCKERHUB_TOKEN, OPENWEATHER_API_KEY.
-# Token DO tylko w środowisku procesu Terraform plan/apply, nigdy w kodzie/state.
+# Token DO tylko w środowisku procesów Terraform plan/apply/destroy, nigdy w kodzie/state.
 # Environments test/dev/prod; odczyt Environment variables dopiero w krokach joba.
 # test: FAZA3_IMAGE_TAG=faza3-test, FAZA3_APP_PORT=18093,
 #       FAZA3_CONTAINER_NAME=pogoda_api_faza3_test, FAZA3_WEATHER_CITY=Warsaw.
@@ -40,16 +49,24 @@ defaults:
 # Terraform generuje osobne pary SSH (tls_private_key) dla dev/prod.
 # Klucze prywatne są w chronionych lokalnych state/plan; nigdy w artefaktach/logach.
 # DOCKERHUB_TOKEN i OPENWEATHER_API_KEY można nadpisać w Environment.
-# Klucz pogodowy wyłącznie runtime kontenera; nie trafia do obrazu/Terraform/cloud-init.
-# Runner: [self-hosted, linux, pogoda-state] — etykieta pogoda-state na JEDNYM agencie.
+# Token Docker Hub i klucz pogody trafiają do provisionera remote-exec przez
+# ephemeral+sensitive TF_VAR_* w plan ORAZ apply, poza zapisanym planem/state.
+# Klucz pogody jest używany wyłącznie runtime kontenera; nie trafia do obrazu/cloud-init.
+# Runner: [self-hosted, linux] — w ćwiczeniu jeden runner Linux z trwałym dyskiem.
 # Jeden kod Terraform, workspaces dev/prod; backend local workspace_dir:
 # STATE_ROOT/REPOSITORY_ID/STUDENT_NAME/workspaces/{dev|prod}/terraform.tfstate.
 # Każdy workspace ma własny plik stanu, TF_DATA_DIR, plan i metadane, poza checkoutem.
 # Nazwy VM/SSH key/firewall: STUDENT_NAME-pogoda-f4-ENV-losowy_sufiks_z_Terraform.
 # Istniejąca domyślna VPC wybranego regionu; Terraform nie tworzy sieci.
-# Deploy test jak w FAZIE-3. Dev/prod: SSH z runnera na osobne VM, HTTP80 → 8080.
+# Deploy test jak w FAZIE-3. Dev/prod: Terraform remote-exec przez SSH, HTTP80 → 8080.
+# FAZA4_SSH_HOST_KEY (opcjonalna Environment variable): publiczny klucz HOSTA SSH
+# właściwej VM, np. ssh-ed25519 AAAA...; bez niej native SSH Terraform nie sprawdza host key.
 # Terraform init/validate/plan/apply to CZTERY OSOBNE JOBY, każdy matrix dev/prod.
 # Bariery matrix: cały poprzedni job musi przejść przed kolejnym; brak promocji/rollbacku.
+# Ręcznie: Run workflow → operation=destroy usuwa dev i prod równocześnie.
+# Jeden job na self-hosted runnerze uruchamia dwa procesy z osobnymi TF_DATA_DIR/workspace.
+# Używa Environment prod oraz DIGITALOCEAN_TOKEN z dostępem do obu VM.
+# Destroy pomija build/test/publish/deploy i zachowuje kontener test oraz pliki state.
 
 env:
   APP_DIR: ./CWICZENIA/15A-Cwiczenia-pipeline-gha/pogoda_python_flusk
@@ -65,6 +82,7 @@ env:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -390,7 +408,7 @@ jobs:
 
   terraform-init:
     name: Terraform init (${{ matrix.environment }})
-    runs-on: [self-hosted, linux, pogoda-state]
+    runs-on: [self-hosted, linux]
     needs: build-and-push
     strategy:
       fail-fast: false
@@ -410,8 +428,16 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
+      - name: Download the published image metadata for Terraform
+        uses: actions/download-artifact@v4
+        with:
+          name: faza4-release-${{ matrix.environment }}
+          path: release-metadata
+
       - name: Prepare persistent workspace paths
         env:
+          IMAGE_TAG: ${{ vars.FAZA4_IMAGE_TAG }}
+          FAZA4_SSH_HOST_KEY: ${{ vars.FAZA4_SSH_HOST_KEY }}
           FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
           FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
           FAZA4_SSH_ALLOWED_CIDR: ${{ vars.FAZA4_SSH_ALLOWED_CIDR }}
@@ -435,7 +461,7 @@ jobs:
 
   terraform-validate:
     name: Terraform validate (${{ matrix.environment }})
-    runs-on: [self-hosted, linux, pogoda-state]
+    runs-on: [self-hosted, linux]
     needs: terraform-init
     strategy:
       fail-fast: false
@@ -472,7 +498,7 @@ jobs:
 
   terraform-plan:
     name: Terraform plan (${{ matrix.environment }})
-    runs-on: [self-hosted, linux, pogoda-state]
+    runs-on: [self-hosted, linux]
     needs: terraform-validate
     strategy:
       fail-fast: false
@@ -503,6 +529,8 @@ jobs:
         working-directory: ${{ env.FAZA4_DIR }}/terraform
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          TF_VAR_dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          TF_VAR_openweather_api_key: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           unset TF_WORKSPACE
           umask 077
@@ -511,19 +539,23 @@ jobs:
             echo "::error::Utwórz Repository secret DIGITALOCEAN_TOKEN."
             exit 1
           fi
+          if [ -z "$TF_VAR_dockerhub_token" ] || [ -z "$TF_VAR_openweather_api_key" ]; then
+            echo "::error::Utwórz DOCKERHUB_TOKEN i OPENWEATHER_API_KEY dla deploya przez Terraform."
+            exit 1
+          fi
           terraform plan -input=false -lock-timeout=60s \
             -var-file="$TF_VARS_FILE" -out="$TF_PLAN_FILE"
 
   terraform-apply:
     name: Terraform apply (${{ matrix.environment }})
-    runs-on: [self-hosted, linux, pogoda-state]
+    runs-on: [self-hosted, linux]
     needs: terraform-plan
     strategy:
       fail-fast: false
       matrix:
         environment: [dev, prod]
     environment: ${{ matrix.environment }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       TARGET_ENVIRONMENT: ${{ matrix.environment }}
     steps:
@@ -547,6 +579,8 @@ jobs:
         working-directory: ${{ env.FAZA4_DIR }}/terraform
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          TF_VAR_dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+          TF_VAR_openweather_api_key: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           unset TF_WORKSPACE
           umask 077
@@ -554,6 +588,10 @@ jobs:
           test -s "$TF_PLAN_FILE"
           if [ -z "$DIGITALOCEAN_TOKEN" ]; then
             echo "::error::Utwórz Repository secret DIGITALOCEAN_TOKEN."
+            exit 1
+          fi
+          if [ -z "$TF_VAR_dockerhub_token" ] || [ -z "$TF_VAR_openweather_api_key" ]; then
+            echo "::error::Brak ephemeral credentials DOCKERHUB_TOKEN / OPENWEATHER_API_KEY."
             exit 1
           fi
           terraform apply -input=false -lock-timeout=60s "$TF_PLAN_FILE"
@@ -571,7 +609,7 @@ jobs:
               outputs[name] = {'value': value}
           Path(os.environ['DEPLOY_METADATA_FILE']).write_text(json.dumps(outputs) + '\n')
           PYOUTPUT
-          echo "Infrastruktura $TARGET_ENVIRONMENT gotowa; URL aplikacji zostanie potwierdzony po deployu."
+          echo "Terraform wdrożył infrastrukturę i aplikację $TARGET_ENVIRONMENT; następny job sprawdzi publiczny URL."
 
       - name: Remember the existence of a workspace state, including a partial apply
         if: always()
@@ -582,8 +620,8 @@ jobs:
           fi
 
   deploy-digitalocean:
-    name: Deploy DigitalOcean (${{ matrix.environment }})
-    runs-on: [self-hosted, linux, pogoda-state]
+    name: Verify DigitalOcean (${{ matrix.environment }})
+    runs-on: [self-hosted, linux]
     needs: terraform-apply
     strategy:
       fail-fast: false
@@ -596,21 +634,12 @@ jobs:
     env:
       TARGET_ENVIRONMENT: ${{ matrix.environment }}
     steps:
-      - name: Checkout SSH deployment and public smoke test
+      - name: Checkout public smoke test
         uses: actions/checkout@v4
-
-      - name: Set up Terraform to read the workspace SSH key
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.17.2
-          terraform_wrapper: false
 
       - name: Read persistent workspace paths
         run: |
           python3 "${FAZA4_DIR}/scripts/prepare_job.py" existing
-
-      - name: Restore the dependency lock file preserved by init
-        run: cp "${TF_DATA_DIR}/dependency.lock.hcl" "${FAZA4_DIR}/terraform/.terraform.lock.hcl"
 
       - name: Download this environment publication metadata
         uses: actions/download-artifact@v4
@@ -623,24 +652,6 @@ jobs:
           IMAGE_TAG: ${{ vars.FAZA4_IMAGE_TAG }}
           WEATHER_CITY: ${{ vars.FAZA4_WEATHER_CITY || 'Warsaw' }}
         run: python3 "${FAZA4_DIR}/scripts/read_release.py"
-
-      - name: Read the generated SSH private key directly into a temporary file
-        working-directory: ${{ env.FAZA4_DIR }}/terraform
-        run: |
-          unset TF_WORKSPACE
-          umask 077
-          test "$(terraform workspace show)" = "$TARGET_ENVIRONMENT"
-          task_ssh_key="$(mktemp "${RUNNER_TEMP}/faza4-ssh-XXXXXX")"
-          echo "SSH_PRIVATE_KEY_FILE=$task_ssh_key" >> "$GITHUB_ENV"
-          terraform output -raw ssh_private_key_openssh > "$task_ssh_key"
-          test -s "$task_ssh_key"
-          chmod 600 "$task_ssh_key"
-
-      - name: Deploy the published container over SSH to the DigitalOcean VM
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
-        run: python3 "${FAZA4_DIR}/scripts/deploy_remote.py"
 
       - name: Verify public WWW and API using real OpenWeather data
         env:
@@ -666,10 +677,125 @@ jobs:
             echo "API: [$APP_URL/api/weather?city=Warsaw]($APP_URL/api/weather?city=Warsaw)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove the temporary SSH private key from the runner
+  terraform-destroy:
+    name: Terraform destroy (dev i prod równocześnie)
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.operation == 'destroy' &&
+      github.ref_name == (vars.FAZA4_DEPLOY_BRANCH || 'main')
+    runs-on: [self-hosted, linux]
+    environment: prod
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Terraform configuration
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - name: Prepare both existing workspace states and isolated working directories
+        env:
+          FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
+          FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
+          FAZA4_SSH_ALLOWED_CIDR: ${{ vars.FAZA4_SSH_ALLOWED_CIDR }}
+        run: |
+          set -euo pipefail
+          umask 077
+          task_destroy_context="$(mktemp -d "${RUNNER_TEMP}/faza4-destroy.XXXXXX")"
+          echo "DESTROY_CONTEXT_DIR=$task_destroy_context" >> "$GITHUB_ENV"
+          # Sprawdź OBA istniejące stany, zanim uruchomisz jakiekolwiek usuwanie.
+          for target_environment in dev prod; do
+            TARGET_ENVIRONMENT="$target_environment" \
+              GITHUB_ENV="${task_destroy_context}/${target_environment}.env" \
+              python3 "${FAZA4_DIR}/scripts/prepare_job.py" destroy
+            while IFS='=' read -r name value; do
+              export "$name=$value"
+            done < "${task_destroy_context}/${target_environment}.env"
+            mkdir -p "${TF_DATA_DIR}/destroy-code" "${TF_DATA_DIR}/destroy-provider-cache"
+            cp "${FAZA4_DIR}"/terraform/*.tf \
+              "${FAZA4_DIR}/terraform/cloud-init.yaml" "${TF_DATA_DIR}/destroy-code/"
+            if [ -f "${FAZA4_DIR}/terraform/.terraform.lock.hcl" ]; then
+              cp "${FAZA4_DIR}/terraform/.terraform.lock.hcl" "${TF_DATA_DIR}/destroy-code/"
+            fi
+          done
+
+      - name: Terraform destroy -auto-approve for dev and prod concurrently
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "$DIGITALOCEAN_TOKEN" ]; then
+            echo "::error::Brak sekretu DIGITALOCEAN_TOKEN."
+            exit 1
+          fi
+          unset TF_WORKSPACE
+          for name in "${!TF_LOG@}"; do
+            unset "$name"
+          done
+          destroy_environment() (
+            set -euo pipefail
+            export TARGET_ENVIRONMENT="$1"
+            while IFS='=' read -r name value; do
+              export "$name=$value"
+            done < "${DESTROY_CONTEXT_DIR}/${TARGET_ENVIRONMENT}.env"
+            export TF_PLUGIN_CACHE_DIR="${TF_DATA_DIR}/destroy-provider-cache"
+            cd "${TF_DATA_DIR}/destroy-code"
+            echo "[$TARGET_ENVIRONMENT] Terraform init i wybór istniejącego workspace."
+            terraform init -input=false -reconfigure \
+              -backend-config="path=${STATE_DIRECTORY}/default/terraform.tfstate" \
+              -backend-config="workspace_dir=${STATE_DIRECTORY}/workspaces"
+            terraform workspace select "$TARGET_ENVIRONMENT"
+            test "$(terraform workspace show)" = "$TARGET_ENVIRONMENT"
+            terraform validate
+            echo "[$TARGET_ENVIRONMENT] Terraform destroy -auto-approve."
+            terraform destroy -auto-approve -input=false -lock-timeout=60s \
+              -var-file="$TF_VARS_FILE"
+            remaining_resources="$(terraform state list)"
+            if [ -n "$remaining_resources" ]; then
+              echo "::error::[$TARGET_ENVIRONMENT] Po destroy w stanie pozostały zasoby."
+              exit 1
+            fi
+            echo "[$TARGET_ENVIRONMENT] Usunięto infrastrukturę; plik state i workspace pozostają na runnerze."
+          )
+          # Dwa procesy działają jednocześnie na jednym self-hosted runnerze.
+          destroy_environment dev &
+          dev_pid=$!
+          destroy_environment prod &
+          prod_pid=$!
+          dev_status=0
+          prod_status=0
+          wait "$dev_pid" || dev_status=$?
+          wait "$prod_pid" || prod_status=$?
+          {
+            echo "### Terraform destroy — dev i prod"
+            echo ""
+            if [ "$dev_status" -eq 0 ]; then
+              echo "- dev: usunięto infrastrukturę"
+            else
+              echo "- dev: BŁĄD — sprawdź log i zachowany stan"
+            fi
+            if [ "$prod_status" -eq 0 ]; then
+              echo "- prod: usunięto infrastrukturę"
+            else
+              echo "- prod: BŁĄD — sprawdź log i zachowany stan"
+            fi
+            echo ""
+            echo "Kontener test i pliki state pozostają na runnerze."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$dev_status" -ne 0 ] || [ "$prod_status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Remove temporary destroy context files
         if: always()
         run: |
-          case "${SSH_PRIVATE_KEY_FILE:-}" in
-            "${RUNNER_TEMP}/faza4-ssh-"*) rm -f -- "$SSH_PRIVATE_KEY_FILE" ;;
-            *) echo "Brak tymczasowego pliku klucza SSH do usunięcia." ;;
+          case "${DESTROY_CONTEXT_DIR:-}" in
+            "${RUNNER_TEMP}/faza4-destroy."*)
+              rm -f -- "${DESTROY_CONTEXT_DIR}/dev.env" "${DESTROY_CONTEXT_DIR}/prod.env"
+              rmdir -- "$DESTROY_CONTEXT_DIR" 2>/dev/null || true
+              ;;
+            *) echo "Brak tymczasowego kontekstu destroy do usunięcia." ;;
           esac

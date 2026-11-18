@@ -39,3 +39,53 @@ variable "ssh_allowed_cidr" {
     error_message = "Podaj pojedynczy publiczny IPv4 runnera z maską /32, np. 203.0.113.10/32."
   }
 }
+
+variable "dockerhub_username" {
+  description = "Login Docker Hub używany podczas pobierania opublikowanego obrazu."
+  type        = string
+  default     = "piotrskoska"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9_-]*$", var.dockerhub_username))
+    error_message = "Podaj prawidłowy login Docker Hub, małymi literami."
+  }
+}
+
+variable "dockerhub_token" {
+  description = "Token Docker Hub przekazywany tylko do provisionera przez TF_VAR_dockerhub_token."
+  type        = string
+  default     = null
+  sensitive   = true
+  ephemeral   = true
+}
+
+variable "openweather_api_key" {
+  description = "Klucz API przekazywany tylko do docker run przez TF_VAR_openweather_api_key."
+  type        = string
+  default     = null
+  sensitive   = true
+  ephemeral   = true
+}
+
+variable "image_reference" {
+  description = "Opublikowany i przetestowany obraz repozytorium@sha256:digest. Przy destroy może być pominięty."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.image_reference == null ? true : can(regex("^[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$", var.image_reference))
+    error_message = "Wymagany jest obraz przypięty digestem, np. piotrskoska/python_pogoda@sha256:<64 znaki hex>."
+  }
+}
+
+variable "deployment_id" {
+  description = "ID przebiegu GitHub Actions; zmiana wymusza ponowne uruchomienie deploya aplikacji."
+  type        = string
+  default     = "manual"
+}
+
+variable "ssh_host_key" {
+  description = "Opcjonalny zaufany publiczny klucz hosta SSH lub CA. Null oznacza brak weryfikacji klucza serwera przez provisioner."
+  type        = string
+  default     = null
+}
