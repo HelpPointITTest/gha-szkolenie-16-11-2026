@@ -1,6 +1,6 @@
 #cloud-config
-# Bootstrap systemu zawiera wyłącznie publiczną konfigurację.
-# Sekrety aplikacji oraz rejestru dostarcza późniejszy krok deploy przez SSH.
+# Public system bootstrap only. Keep this file ASCII for user_data handling.
+# Runtime application and registry secrets are supplied later over SSH.
 package_update: true
 packages:
   - ca-certificates

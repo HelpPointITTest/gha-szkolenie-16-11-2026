@@ -56,6 +56,8 @@ defaults:
 # Jeden kod Terraform, workspaces dev/prod; backend local workspace_dir:
 # STATE_ROOT/REPOSITORY_ID/STUDENT_NAME/workspaces/{dev|prod}/terraform.tfstate.
 # Każdy workspace ma własny plik stanu, TF_DATA_DIR, plan i metadane, poza checkoutem.
+# Przygotowanie i walidacja są bezpośrednio w YAML (Bash + jq); wspólne kroki mają kotwice YAML.
+# Self-hosted Linux wymaga jq oraz GNU coreutils/diffutils (realpath, stat, sha256sum, cmp).
 # Nazwy VM/SSH key/firewall: STUDENT_NAME-pogoda-f4-ENV-losowy_sufiks_z_Terraform.
 # Istniejąca domyślna VPC wybranego regionu; Terraform nie tworzy sieci.
 # Deploy test jak w FAZIE-3. Dev/prod: Terraform remote-exec przez SSH, HTTP80 → 8080.
@@ -234,20 +236,9 @@ jobs:
           fi
           docker push "${HUB_IMAGE_BASE}:${IMAGE_TAG}"
           export IMAGE_DIGEST="$image_digest"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          metadata = {
-              'environment': os.environ['TARGET_ENVIRONMENT'],
-              'image_tag': os.environ['IMAGE_TAG'],
-              'image_digest': os.environ['IMAGE_DIGEST'],
-              'commit': os.environ['GITHUB_SHA'],
-              'run_id': os.environ['GITHUB_RUN_ID'],
-          }
-          Path('release.json').write_text(json.dumps(metadata, indent=2) + '\n')
-          PY
+          jq -n '{environment: env.TARGET_ENVIRONMENT, image_tag: env.IMAGE_TAG,
+            image_digest: env.IMAGE_DIGEST, commit: env.GITHUB_SHA,
+            run_id: env.GITHUB_RUN_ID}' > release.json
 
       - name: Upload environment release metadata
         uses: actions/upload-artifact@v4
@@ -434,14 +425,127 @@ jobs:
           name: faza4-release-${{ matrix.environment }}
           path: release-metadata
 
-      - name: Prepare persistent workspace paths
+      - &terraform_paths
+        name: Set persistent Terraform paths
+        run: |
+          set -euo pipefail
+          for command in jq realpath stat sha256sum cmp; do
+            command -v "$command" >/dev/null
+          done
+          umask 077
+          if ! [[ "$FAZA4_STUDENT_NAME" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)+$ ]] ||
+             [ "${#FAZA4_STUDENT_NAME}" -gt 40 ]; then
+            echo "::error::FAZA4_STUDENT_NAME musi mieć postać imie-nazwisko (maks. 40 znaków ASCII)."
+            exit 1
+          fi
+          if [[ "$FAZA4_STATE_ROOT" != /* || "$FAZA4_STATE_ROOT" =~ [[:cntrl:]] ]] ||
+             [ -L "$FAZA4_STATE_ROOT" ]; then
+            echo "::error::FAZA4_STATE_ROOT musi być pełną ścieżką trwałego katalogu."
+            exit 1
+          fi
+          root="$(realpath -e "$FAZA4_STATE_ROOT")"
+          workspace="$(realpath -e "$GITHUB_WORKSPACE")"
+          temporary="$(realpath -e "$RUNNER_TEMP")"
+          case "$root/" in
+            /|//|"$workspace/"*|"$temporary/"*)
+              echo "::error::Stan musi być poza checkoutem i RUNNER_TEMP."; exit 1 ;;
+          esac
+          if [ ! -O "$root" ] || [ "$(stat -c %a "$root")" != 700 ] ||
+             [ ! -f "$root/.faza4-state-root" ] || [ -L "$root/.faza4-state-root" ]; then
+            echo "::error::Przygotuj katalog stanu 0700 i znacznik .faza4-state-root jako konto runnera."
+            exit 1
+          fi
+          state_directory="$root/$GITHUB_REPOSITORY_ID/$FAZA4_STUDENT_NAME"
+          run_directory="$state_directory/runs/$GITHUB_RUN_ID"
+          for directory in "$root/$GITHUB_REPOSITORY_ID" "$state_directory" \
+              "$state_directory/workspaces" "$state_directory/initialized" \
+              "$state_directory/runs" "$run_directory"; do
+            if [ -e "$directory" ] || [ -L "$directory" ]; then
+              if [ ! -d "$directory" ] || [ -L "$directory" ] ||
+                 [ ! -O "$directory" ] || [ "$(stat -c %a "$directory")" != 700 ]; then
+                echo "::error::Katalogi stanu muszą należeć do runnera i mieć prawa 0700."
+                exit 1
+              fi
+            fi
+          done
+          {
+            echo "STATE_DIRECTORY=$state_directory"
+            echo "RUN_DIRECTORY=$run_directory"
+          } >> "$GITHUB_ENV"
+          if [ -n "${TARGET_ENVIRONMENT:-}" ]; then
+            [[ "$TARGET_ENVIRONMENT" == dev || "$TARGET_ENVIRONMENT" == prod ]]
+            state_file="$state_directory/workspaces/$TARGET_ENVIRONMENT/terraform.tfstate"
+            if [ -f "$state_directory/initialized/$TARGET_ENVIRONMENT" ] && [ ! -s "$state_file" ]; then
+              echo "::error::Brak wcześniej używanego state. Przywróć go z kopii zamiast tworzyć nowy."
+              exit 1
+            fi
+            if [ -e "$state_file" ] || [ -L "$state_file" ]; then
+              test -f "$state_file" && test ! -L "$state_file"
+              jq -e 'type == "object" and (.version | type == "number")' "$state_file" >/dev/null
+            fi
+            {
+              echo "TF_DATA_DIR=$run_directory/terraform-data/$TARGET_ENVIRONMENT"
+              echo "TF_PLAN_FILE=$run_directory/plans/$TARGET_ENVIRONMENT.tfplan"
+              echo "TF_VARS_FILE=$run_directory/inputs/$TARGET_ENVIRONMENT.tfvars.json"
+              echo "TF_STATE_FILE=$state_file"
+              echo "DEPLOY_METADATA_FILE=$run_directory/releases/$TARGET_ENVIRONMENT.json"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - &release_metadata
+        name: Validate the published environment image
         env:
           IMAGE_TAG: ${{ vars.FAZA4_IMAGE_TAG }}
+        run: |
+          [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,86}$ ]]
+          [[ "$HUB_IMAGE_BASE" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]
+          jq -e '
+            type == "object" and .environment == env.TARGET_ENVIRONMENT and
+            .image_tag == env.IMAGE_TAG and .commit == env.GITHUB_SHA and
+            .run_id == env.GITHUB_RUN_ID and
+            (.image_digest | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+          ' release-metadata/release.json >/dev/null
+          digest="$(jq -r '.image_digest' release-metadata/release.json)"
+          echo "IMAGE_REFERENCE=${HUB_IMAGE_BASE}@${digest}" >> "$GITHUB_ENV"
+
+      - name: Write nonsecret Terraform variables and their checksum
+        env:
           FAZA4_SSH_HOST_KEY: ${{ vars.FAZA4_SSH_HOST_KEY }}
           FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
           FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
           FAZA4_SSH_ALLOWED_CIDR: ${{ vars.FAZA4_SSH_ALLOWED_CIDR }}
-        run: python3 "${FAZA4_DIR}/scripts/prepare_job.py" init
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$STATE_DIRECTORY/workspaces/$TARGET_ENVIRONMENT" \
+            "$STATE_DIRECTORY/initialized" "$TF_DATA_DIR" \
+            "$RUN_DIRECTORY/plans" "$RUN_DIRECTORY/inputs" "$RUN_DIRECTORY/releases"
+          if [ -f "$RUN_DIRECTORY/commit" ]; then
+            test "$(cat "$RUN_DIRECTORY/commit")" = "$GITHUB_SHA"
+          else
+            printf '%s\n' "$GITHUB_SHA" > "$RUN_DIRECTORY/commit"
+          fi
+          candidate="$(mktemp "${TF_VARS_FILE}.XXXXXX")"
+          trap 'rm -f -- "$candidate"' EXIT
+          jq -n --arg environment "$TARGET_ENVIRONMENT" \
+            --arg student "$FAZA4_STUDENT_NAME" --arg region "$FAZA4_REGION" \
+            --arg size "$FAZA4_DROPLET_SIZE" --arg cidr "$FAZA4_SSH_ALLOWED_CIDR" \
+            --arg image "$IMAGE_REFERENCE" --arg username "$DOCKERHUB_USERNAME" \
+            --arg deployment "$GITHUB_RUN_ID" --arg host_key "$FAZA4_SSH_HOST_KEY" '
+            {environment: $environment, student_name: $student, region: $region,
+             droplet_size: $size, ssh_allowed_cidr: $cidr, image_reference: $image,
+             dockerhub_username: $username, deployment_id: $deployment,
+             ssh_host_key: (if $host_key == "" then null else $host_key end)}
+          ' > "$candidate"
+          if [ -e "$TF_VARS_FILE" ]; then
+            if ! cmp -s "$TF_VARS_FILE" "$candidate"; then
+              echo "::error::Zmienne tego przebiegu zmieniły się. Uruchom nowy workflow."
+              exit 1
+            fi
+          else
+            mv "$candidate" "$TF_VARS_FILE"
+          fi
+          sha256sum "$TF_VARS_FILE" | cut -d ' ' -f 1 > "$TF_VARS_FILE.sha256"
 
       - name: Terraform init with the persistent local backend
         working-directory: ${{ env.FAZA4_DIR }}/terraform
@@ -481,9 +585,19 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
-      - name: Prepare persistent workspace paths
+      - *terraform_paths
+
+      - &restore_terraform_inputs
+        name: Verify the Terraform input snapshot from init
         run: |
-          python3 "${FAZA4_DIR}/scripts/prepare_job.py" existing
+          test -d "$TF_DATA_DIR"
+          test -f "$TF_VARS_FILE" && test ! -L "$TF_VARS_FILE"
+          test "$(cat "$RUN_DIRECTORY/commit")" = "$GITHUB_SHA"
+          actual_checksum="$(sha256sum "$TF_VARS_FILE" | cut -d ' ' -f 1)"
+          if [ "$actual_checksum" != "$(cat "$TF_VARS_FILE.sha256")" ]; then
+            echo "::error::Plik zmiennych Terraform został zmieniony po init."
+            exit 1
+          fi
 
       - name: Restore the dependency lock file preserved by init
         run: cp "${TF_DATA_DIR}/dependency.lock.hcl" "${FAZA4_DIR}/terraform/.terraform.lock.hcl"
@@ -518,9 +632,9 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
-      - name: Prepare persistent workspace paths
-        run: |
-          python3 "${FAZA4_DIR}/scripts/prepare_job.py" existing
+      - *terraform_paths
+
+      - *restore_terraform_inputs
 
       - name: Restore the dependency lock file preserved by init
         run: cp "${TF_DATA_DIR}/dependency.lock.hcl" "${FAZA4_DIR}/terraform/.terraform.lock.hcl"
@@ -568,9 +682,9 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
-      - name: Prepare persistent workspace paths
-        run: |
-          python3 "${FAZA4_DIR}/scripts/prepare_job.py" existing
+      - *terraform_paths
+
+      - *restore_terraform_inputs
 
       - name: Restore the dependency lock file preserved by init
         run: cp "${TF_DATA_DIR}/dependency.lock.hcl" "${FAZA4_DIR}/terraform/.terraform.lock.hcl"
@@ -596,19 +710,12 @@ jobs:
           fi
           terraform apply -input=false -lock-timeout=60s "$TF_PLAN_FILE"
           # W stanie jest prywatny klucz SSH: nie eksportuj całego output -json.
-          python3 - <<'PYOUTPUT'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-
-          outputs = {}
-          for name in ('droplet_id', 'public_ip', 'app_url'):
-              value = subprocess.run(['terraform', 'output', '-raw', name],
-                                     text=True, capture_output=True, check=True).stdout.strip()
-              outputs[name] = {'value': value}
-          Path(os.environ['DEPLOY_METADATA_FILE']).write_text(json.dumps(outputs) + '\n')
-          PYOUTPUT
+          droplet_id="$(terraform output -raw droplet_id)"
+          public_ip="$(terraform output -raw public_ip)"
+          app_url="$(terraform output -raw app_url)"
+          jq -n --arg id "$droplet_id" --arg ip "$public_ip" --arg url "$app_url" '
+            {droplet_id: {value: $id}, public_ip: {value: $ip}, app_url: {value: $url}}
+          ' > "$DEPLOY_METADATA_FILE"
           echo "Terraform wdrożył infrastrukturę i aplikację $TARGET_ENVIRONMENT; następny job sprawdzi publiczny URL."
 
       - name: Remember the existence of a workspace state, including a partial apply
@@ -637,9 +744,9 @@ jobs:
       - name: Checkout public smoke test
         uses: actions/checkout@v4
 
-      - name: Read persistent workspace paths
-        run: |
-          python3 "${FAZA4_DIR}/scripts/prepare_job.py" existing
+      - *terraform_paths
+
+      - *restore_terraform_inputs
 
       - name: Download this environment publication metadata
         uses: actions/download-artifact@v4
@@ -647,11 +754,36 @@ jobs:
           name: faza4-release-${{ matrix.environment }}
           path: release-metadata
 
-      - name: Validate the published digest and Terraform IP
+      - *release_metadata
+
+      - name: Read and validate the application IP URL from Terraform
         env:
-          IMAGE_TAG: ${{ vars.FAZA4_IMAGE_TAG }}
           WEATHER_CITY: ${{ vars.FAZA4_WEATHER_CITY || 'Warsaw' }}
-        run: python3 "${FAZA4_DIR}/scripts/read_release.py"
+        run: |
+          jq -e --arg image "$IMAGE_REFERENCE" '.image_reference == $image' "$TF_VARS_FILE" >/dev/null
+          address="$(jq -er '.public_ip.value | strings' "$DEPLOY_METADATA_FILE")"
+          droplet_id="$(jq -er '.droplet_id.value | strings' "$DEPLOY_METADATA_FILE")"
+          app_url="$(jq -er '.app_url.value | strings' "$DEPLOY_METADATA_FILE")"
+          [[ "$droplet_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$address" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]
+          IFS='.' read -r first second third fourth <<< "$address"
+          for octet in "$first" "$second" "$third" "$fourth"; do
+            test "$octet" -le 255
+          done
+          if [ "$first" -eq 0 ] || [ "$first" -eq 10 ] || [ "$first" -eq 127 ] ||
+             [ "$first" -ge 224 ] || { [ "$first" -eq 169 ] && [ "$second" -eq 254 ]; } ||
+             { [ "$first" -eq 172 ] && [ "$second" -ge 16 ] && [ "$second" -le 31 ]; } ||
+             { [ "$first" -eq 192 ] && [ "$second" -eq 168 ]; }; then
+            echo "::error::Terraform musi zwrócić publiczny IPv4 VM."
+            exit 1
+          fi
+          test "$app_url" = "http://$address"
+          if [ -z "${WEATHER_CITY//[[:space:]]/}" ] || [ "${#WEATHER_CITY}" -gt 100 ] ||
+             [[ "$WEATHER_CITY" =~ [[:cntrl:]] ]]; then
+            echo "::error::FAZA4_WEATHER_CITY musi zawierać miasto w jednej linii."
+            exit 1
+          fi
+          echo "APP_URL=$app_url" >> "$GITHUB_ENV"
 
       - name: Verify public WWW and API using real OpenWeather data
         env:
@@ -695,7 +827,9 @@ jobs:
           terraform_version: 1.17.2
           terraform_wrapper: false
 
-      - name: Prepare both existing workspace states and isolated working directories
+      - *terraform_paths
+
+      - name: Check both existing states and prepare their Terraform variables
         env:
           FAZA4_REGION: ${{ vars.FAZA4_REGION || 'fra1' }}
           FAZA4_DROPLET_SIZE: ${{ vars.FAZA4_DROPLET_SIZE || 's-1vcpu-1gb' }}
@@ -703,21 +837,26 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          task_destroy_context="$(mktemp -d "${RUNNER_TEMP}/faza4-destroy.XXXXXX")"
-          echo "DESTROY_CONTEXT_DIR=$task_destroy_context" >> "$GITHUB_ENV"
-          # Sprawdź OBA istniejące stany, zanim uruchomisz jakiekolwiek usuwanie.
+          # Sprawdź OBA istniejące stany przed jakimkolwiek wywołaniem Terraform.
           for target_environment in dev prod; do
-            TARGET_ENVIRONMENT="$target_environment" \
-              GITHUB_ENV="${task_destroy_context}/${target_environment}.env" \
-              python3 "${FAZA4_DIR}/scripts/prepare_job.py" destroy
-            while IFS='=' read -r name value; do
-              export "$name=$value"
-            done < "${task_destroy_context}/${target_environment}.env"
-            mkdir -p "${TF_DATA_DIR}/destroy-code" "${TF_DATA_DIR}/destroy-provider-cache"
+            state_file="$STATE_DIRECTORY/workspaces/$target_environment/terraform.tfstate"
+            test -f "$state_file" && test ! -L "$state_file"
+            jq -e 'type == "object" and (.version | type == "number")' "$state_file" >/dev/null
+          done
+          mkdir -p "$RUN_DIRECTORY/inputs"
+          for target_environment in dev prod; do
+            data_directory="$RUN_DIRECTORY/terraform-data/$target_environment"
+            mkdir -p "$data_directory/destroy-code" "$data_directory/destroy-provider-cache"
+            jq -n --arg environment "$target_environment" \
+              --arg student "$FAZA4_STUDENT_NAME" --arg region "$FAZA4_REGION" \
+              --arg size "$FAZA4_DROPLET_SIZE" --arg cidr "$FAZA4_SSH_ALLOWED_CIDR" '
+              {environment: $environment, student_name: $student, region: $region,
+               droplet_size: $size, ssh_allowed_cidr: $cidr}
+            ' > "$RUN_DIRECTORY/inputs/$target_environment.tfvars.json"
             cp "${FAZA4_DIR}"/terraform/*.tf \
-              "${FAZA4_DIR}/terraform/cloud-init.yaml" "${TF_DATA_DIR}/destroy-code/"
+              "${FAZA4_DIR}/terraform/cloud-init.yaml" "$data_directory/destroy-code/"
             if [ -f "${FAZA4_DIR}/terraform/.terraform.lock.hcl" ]; then
-              cp "${FAZA4_DIR}/terraform/.terraform.lock.hcl" "${TF_DATA_DIR}/destroy-code/"
+              cp "${FAZA4_DIR}/terraform/.terraform.lock.hcl" "$data_directory/destroy-code/"
             fi
           done
 
@@ -738,9 +877,8 @@ jobs:
           destroy_environment() (
             set -euo pipefail
             export TARGET_ENVIRONMENT="$1"
-            while IFS='=' read -r name value; do
-              export "$name=$value"
-            done < "${DESTROY_CONTEXT_DIR}/${TARGET_ENVIRONMENT}.env"
+            export TF_DATA_DIR="$RUN_DIRECTORY/terraform-data/$TARGET_ENVIRONMENT"
+            TF_VARS_FILE="$RUN_DIRECTORY/inputs/$TARGET_ENVIRONMENT.tfvars.json"
             export TF_PLUGIN_CACHE_DIR="${TF_DATA_DIR}/destroy-provider-cache"
             cd "${TF_DATA_DIR}/destroy-code"
             echo "[$TARGET_ENVIRONMENT] Terraform init i wybór istniejącego workspace."
@@ -788,14 +926,3 @@ jobs:
           if [ "$dev_status" -ne 0 ] || [ "$prod_status" -ne 0 ]; then
             exit 1
           fi
-
-      - name: Remove temporary destroy context files
-        if: always()
-        run: |
-          case "${DESTROY_CONTEXT_DIR:-}" in
-            "${RUNNER_TEMP}/faza4-destroy."*)
-              rm -f -- "${DESTROY_CONTEXT_DIR}/dev.env" "${DESTROY_CONTEXT_DIR}/prod.env"
-              rmdir -- "$DESTROY_CONTEXT_DIR" 2>/dev/null || true
-              ;;
-            *) echo "Brak tymczasowego kontekstu destroy do usunięcia." ;;
-          esac

@@ -49,8 +49,48 @@ resource "terraform_data" "application" {
         echo 'Cloud-init nie jest w stanie done.' >&2
         exit 1
       fi
-      systemctl is-active --quiet docker
-      docker info >/dev/null
+      # Warnings from an invalid cloud-config can leave Docker uninstalled.
+      # Reconcile the required packages only after cloud-init has finished.
+      install_required=0
+      for package in ca-certificates curl docker.io python3; do
+        package_status="$(dpkg-query -W -f='$${Status}' "$package" 2>/dev/null || true)"
+        if [ "$package_status" != 'install ok installed' ]; then
+          echo "Required package is missing: $package"
+          install_required=1
+        fi
+      done
+      if ! command -v docker >/dev/null 2>&1; then
+        install_required=1
+      fi
+      if [ "$install_required" -eq 1 ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        if ! timeout 300 apt-get update; then
+          echo 'Package index update failed; application deployment is stopped.' >&2
+          exit 1
+        fi
+        if ! timeout 300 apt-get install -y --no-install-recommends ca-certificates curl docker.io python3; then
+          echo 'Required package installation failed; application deployment is stopped.' >&2
+          exit 1
+        fi
+      fi
+      if ! command -v docker >/dev/null 2>&1; then
+        echo 'Docker executable is missing after package installation.' >&2
+        exit 1
+      fi
+      if ! systemctl enable --now docker; then
+        systemctl status --no-pager docker || true
+        echo 'Docker service could not be enabled or started.' >&2
+        exit 1
+      fi
+      if ! systemctl is-active --quiet docker; then
+        systemctl status --no-pager docker || true
+        echo 'Docker service is not active after startup.' >&2
+        exit 1
+      fi
+      if ! docker info >/dev/null; then
+        echo 'Docker daemon does not respond to docker info.' >&2
+        exit 1
+      fi
       echo 'Cloud-init zakończony; Docker jest aktywny i odpowiada.'
     BOOTSTRAP
     ]

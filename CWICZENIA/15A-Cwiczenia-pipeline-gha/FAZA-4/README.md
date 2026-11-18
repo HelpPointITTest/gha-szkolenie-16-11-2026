@@ -17,17 +17,15 @@ SSH dla `dev` i `prod` — nie przygotowujesz ich ręcznie.
 | [15A-FAZA4-pogoda.yaml](../../../.github/workflows/15A-FAZA4-pogoda.yaml) | Gotowy workflow w `.github/workflows/` |
 | [terraform/](terraform/) | Wspólny kod infrastruktury dla `dev` i `prod` |
 | [terraform/application.tf](terraform/application.tf) | Deploy kontenera przez `terraform_data` i provisionery `remote-exec` |
-| [scripts/prepare_job.py](scripts/prepare_job.py) | Sprawdzenie i zachowanie ścieżek, workspace oraz wejść przebiegu |
-| [scripts/read_release.py](scripts/read_release.py) | Sprawdzenie metadanych obrazu i publicznych wyników Terraform |
 
 Joby infrastruktury działają na jednym self-hosted runnerze i wykonują
 Terraform, który tworzy zasoby przez API DigitalOcean i w tym samym `apply`
 uruchamia aplikację na VM przez SSH, za pomocą `remote-exec`. To deploy
 wykonywany przez Terraform, bez Ansible i bez osobnego skryptu Python
 sterującego kontenerem. Build, test, publikację oraz końcową publiczną
-weryfikację WWW/API realizują joby GitHub Actions. Skrypty pomocnicze
-przygotowują ścieżki i metadane. Ręczne usuwanie infrastruktury wykonują
-polecenia Terraform zapisane bezpośrednio w YAML workflow.
+weryfikację WWW/API realizują joby GitHub Actions. Ścieżki, zmienne i metadane
+przygotowują bezpośrednio kroki YAML, używając Bash oraz `jq`.
+Ręczne usuwanie infrastruktury również wykonują polecenia Terraform w YAML.
 
 **Dopiero uruchomienie joba `apply` przez słuchacza tworzy płatne zasoby
 DigitalOcean.** Samo przygotowanie plików lub `terraform validate` ich nie tworzy.
@@ -55,7 +53,8 @@ Na VM port hosta `80` kieruje do Nginxa na `8080` wewnątrz kontenera.
 2. W tym ćwiczeniu korzystaj z jednego self-hosted runnera Linux, na którego
    dysku pozostaje stan Terraform. Dodatkowa etykieta nie jest potrzebna.
 3. Sprawdź, czy konto usługi runnera ma dostęp do Dockera i poleceń `git`,
-   `python3`, `ssh`, `ssh-keygen`, `curl` oraz `unzip`.
+   `python3`, `curl`, `unzip`, `jq` oraz narzędzi GNU: `realpath`, `stat`,
+   `sha256sum` i `cmp`. Python jest nadal używany przez rzeczywisty test aplikacji.
 4. Dopuść połączenia wychodzące HTTPS do GitHub, rejestru Terraform,
    DigitalOcean i Docker Hub, HTTP do aplikacji na VM oraz SSH do VM na `22`.
 5. Ustal **publiczny IPv4, z którego runner wychodzi do Internetu**. Jeśli
@@ -71,6 +70,20 @@ runs-on: [self-hosted, linux]
 Konfiguracja używa Twojego jednego runnera Linux. Kolejne joby odczytują
 lokalne pliki z jego dysku, dlatego muszą działać na tym samym komputerze.
 Build i test nadal korzystają z `ubuntu-latest`.
+
+Na runnerze Ubuntu/Debian brakujące narzędzia JSON i plikowe zainstalujesz
+jednorazowo przez:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y jq coreutils diffutils
+command -v jq realpath stat sha256sum cmp
+```
+
+`jq` odczytuje metadane obrazu oraz buduje niesekretne pliki JSON Terraform.
+`coreutils` dostarcza m.in. `realpath`, `stat` i `sha256sum`; `cmp` pochodzi
+z `diffutils`. Workflow sprawdza dostępność wymaganych poleceń przed pracą
+z trwałym katalogiem stanu.
 
 ## Krok 3. Przygotuj trwały katalog stanu
 
@@ -245,7 +258,7 @@ lub pliku planu.
 
 ## Krok 8. Sprawdź workflow w katalogu GitHub Actions
 
-1. Pozostaw katalogi `terraform` i `scripts` w tej FAZIE-4.
+1. Pozostaw kod Terraform i tę instrukcję w katalogu `FAZA-4`.
 2. Otwórz gotowy [workflow](../../../.github/workflows/15A-FAZA4-pogoda.yaml).
    Plik znajduje się już w `.github/workflows/15A-FAZA4-pogoda.yaml`.
 3. Zatwierdź materiał ćwiczenia i plik workflow w swoim repozytorium,
@@ -258,7 +271,7 @@ lub pliku planu.
    publikacje lub deploye `test`.
 
 GitHub odczytuje workflow z `.github/workflows/`. Edytuj bezpośrednio ten plik;
-kod Terraform, skrypty i instrukcja pozostają w `FAZA-4`.
+kod Terraform i instrukcja pozostają w `FAZA-4`.
 
 ## Krok 9. Zachowaj wspólny build, cache i rzeczywisty test
 
@@ -298,11 +311,13 @@ self-hosted runnerze Linux i z właściwym GitHub Environment.
 2. Sprawdza katalog stanu i przygotowuje trwałe pliki robocze bieżącego
    przebiegu poza checkoutem.
 3. Pobiera metadane opublikowanego obrazu swojego środowiska i sprawdza ich
-   zgodność z tagiem, commitem oraz bieżącym przebiegiem.
+   zgodność z tagiem, commitem oraz bieżącym przebiegiem w kroku Bash z `jq`.
 4. Korzysta z tego samego kodu z checkoutu i przygotowuje zmienne niesekretne:
    środowisko, identyfikator słuchacza, region, rozmiar VM, CIDR SSH,
    `image_reference` z digestem, login Docker Hub i `deployment_id`
    bieżącego przebiegu. Opcjonalnie dodaje zaufany `ssh_host_key`.
+   Tworzy plik `tfvars` przez `jq`, zapisuje jego sumę SHA256 i identyfikator
+   commita, aby dalsze joby użyły tych samych wejść.
 5. Konfiguruje backend `local`, wskazując `workspace_dir` na trwały katalog
    `workspaces` tego repozytorium i słuchacza.
 6. Wykonuje `terraform init` oraz `terraform workspace select -or-create`
@@ -322,13 +337,22 @@ na workspace `default` są blokowane.
 a nie w checkoutowym `.terraform`. Kolejne joby wracają do tej samej
 zainicjalizowanej konfiguracji.
 
+Wspólne kroki są zdefiniowane w samym YAML przez kotwice i aliasy:
+`&terraform_paths` przygotowuje ścieżki, `&release_metadata` sprawdza metadane
+publikacji, a `&restore_terraform_inputs` sprawdza zachowane wejścia kolejnych
+jobów. Zapis `*terraform_paths` powtarza wcześniej zdefiniowany krok.
+Nie dodawaj dla tych nazw Repository variables — to nazwy fragmentów YAML.
+[Kotwice i aliasy w GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).
+
 ## Krok 12. Wykonaj `validate` jako osobny job
 
 1. Job `validate` startuje po sukcesie `init`.
 2. Ponownie udostępnia tę samą wersję Terraform; ustawienie ścieżki polecenia
    jest wykonywane w każdym jobie.
 3. Otwiera ten sam katalog roboczy i `TF_DATA_DIR` swojego środowiska.
-4. Sprawdza wybrany workspace i wykonuje `terraform validate`.
+4. Sprawdza zapisany commit, sumę SHA256 pliku zmiennych oraz dostępność
+   wcześniejszych plików. Brak wcześniej używanego stanu zatrzymuje operację.
+5. Sprawdza wybrany workspace i wykonuje `terraform validate`.
 
 Nie przesyła stanu ani `.terraform` jako artefaktu GitHub. Pliki pozostają
 na trwałym dysku jednego przypisanego runnera.
@@ -382,6 +406,9 @@ a nie reprezentowany jako zasób osobnego providera Docker.
 
 Cloud-init instaluje `docker.io`, `python3`, `curl` i certyfikaty CA,
 a następnie włącza Dockera. Nie zawiera obrazu aplikacji ani sekretów.
+Provisioner dodatkowo sprawdza wymagane pakiety i usługę Docker; gdy bootstrap
+ich nie przygotował, instaluje brakujące składniki i uruchamia usługę przed
+deployem. Krytyczny błąd cloud-init nadal zatrzymuje wykonanie.
 
 Cały workflow ma wspólną grupę concurrency dla repozytorium oraz
 `cancel-in-progress: false`, aby kolejny przebieg nie zmienił stanu pomiędzy
@@ -415,7 +442,8 @@ W `apply` każdego środowiska natywne provisionery Terraform wykonują:
 1. Połączenie SSH z VM i ograniczone czasem oczekiwanie na cloud-init.
 2. Odczyt wyniku bootstrapu. Kod `0` oznacza sukces. Kod `2` z zakończonym
    statusem `done` oznacza problemy możliwe do odzyskania: pipeline pokazuje
-   diagnostykę i wymaga dodatkowo działającej usługi Docker oraz `docker info`.
+   diagnostykę, zapewnia brakujące pakiety i uruchomienie Dockera, a potem
+   wymaga działającej usługi oraz `docker info`.
    Błąd krytyczny, brak zakończenia lub timeout zatrzymuje deploy.
 3. Logowanie Docker Hub na VM w osobnym tymczasowym katalogu konfiguracji.
 4. Pobranie obrazu po digescie; błąd pobierania pozostawia obecny kontener.
@@ -437,8 +465,9 @@ Po sukcesie `apply` startuje macierz **Verify DigitalOcean**. Zachowany
 identyfikator joba to `deploy-digitalocean`, ale jego zadaniem jest teraz
 wyłącznie weryfikacja publicznego adresu. Job:
 
-1. Sprawdza zgodność metadanych obrazu i publicznych wyników Terraform
-   ze środowiskiem i bieżącym przebiegiem.
+1. W krokach Bash z `jq` sprawdza zgodność metadanych obrazu i publicznych
+   wyników Terraform ze środowiskiem i bieżącym przebiegiem, w tym IP,
+   identyfikator VM oraz zgodność URL z adresem IP.
 2. Sprawdza publiczne `/healthz`, WWW oraz prawdziwe zapytanie pogodowe API.
 3. Zapisuje działający URL w podsumowaniu i przy GitHub Environment.
 
@@ -508,10 +537,24 @@ test WWW i API potwierdza działającą aplikację pod tym adresem.
 | SSH nie odpowiada | Publiczny adres runnera, CIDR `/32`, firewall, właściwy workspace i wygenerowany klucz ze stanu |
 | Niezgodny klucz hosta SSH | Tożsamość VM i zaufany `FAZA4_SSH_HOST_KEY` właściwego Environment; nie podstawiaj klucza logowania zamiast klucza serwera |
 | Cloud-init kończy się kodem `2` i `done` | Diagnostykę `status --long`, działanie Dockera oraz wynik WWW/API; sam kod nie wskazuje konkretnej przyczyny ostrzeżeń |
+| Cloud-init zgłasza niedozwolony znak YAML `#x0082` | Kodowanie `cloud-init.yaml`; przygotowany plik używa ASCII, a szczegóły i wpływ zmiany `user_data` opisano poniżej |
 | Krytyczny błąd cloud-init lub timeout | Instalację pakietów, dostęp VM do repozytoriów Ubuntu i logi bootstrapu |
 | `docker pull` odrzucony | Prawo odczytu obrazu, login i token Docker Hub |
 | `/healthz` działa, pogoda nie | Aktywność i limit prawdziwego klucza OpenWeather, miasto, dostęp VM do API |
 | URL VM nie działa | Sukces publicznego testu po deployu, IP właściwej VM i regułę TCP80 |
+
+W logach bootstrapu wystąpił komunikat o niedozwolonym znaku YAML `#x0082`.
+Może on wynikać z błędnej interpretacji bajtów UTF-8 polskiego komentarza
+w cloud-config. To wskazówka z logu i lokalnego pliku, bez niezależnego
+potwierdzenia zawartości pliku na VM. Przygotowany `cloud-init.yaml` używa
+teraz wyłącznie ASCII, a provisioner jawnie zapewnia pakiety i usługę Docker,
+jeżeli wcześniejsza konfiguracja ich nie uruchomiła.
+
+**Zmiana `cloud-init.yaml` zmienia `user_data` Dropleta. Terraform zaplanuje
+zastąpienie istniejących VM utworzonych z poprzednią treścią `user_data`.**
+Sprawdź ten wynik w następnym `plan`: odtworzone `dev` i `prod` mogą otrzymać
+inne publiczne IP, więc po wdrożeniu użyj nowych URL z podsumowania.
+Przygotowanie tej poprawki nie jest wykonaniem `apply` ani odtworzeniem hostów.
 
 Nie usuwaj stanu również po **częściowo nieudanym `apply`**. Część zasobów
 mogła już powstać, a zapisany stan pozwala kontynuować. Znaczniki pomagają
@@ -561,10 +604,11 @@ swojego środowiska. Kod źródłowy
 Terraform jest wspólny. Powłoka uruchamia oba procesy w tle, zapamiętuje ich
 identyfikatory i czeka na zakończenie obu przez `wait`.
 
-Przed uruchomieniem któregokolwiek polecenia Terraform krok przygotowania
-sprawdza obecność i poprawność **obu** stanów przez istniejący
-`prepare_job.py destroy`. Ten helper przygotowuje tylko ścieżki i konfigurację.
-Brak lub uszkodzenie jednego stanu zatrzymuje operację przed wywołaniem Terraform.
+Przed uruchomieniem któregokolwiek polecenia Terraform kroki Bash w YAML
+sprawdzają obecność i poprawność JSON **obu** istniejących plików stanu.
+Brak lub uszkodzenie jednego zatrzymuje operację przed wywołaniem Terraform.
+Następnie `jq` tworzy niesekretne pliki zmiennych dla obu środowisk, a workflow
+przygotowuje oddzielne katalogi kodu, danych i cache providerów.
 
 Właściwe polecenia są zapisane bezpośrednio w jobie **Terraform destroy**.
 Każdy proces wykonuje `terraform init`, wybór istniejącego workspace bez
