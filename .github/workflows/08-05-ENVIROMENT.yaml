@@ -268,55 +268,55 @@ jobs:
             docker logs "$CONTAINER_NAME" || true
           fi
 
-  build-and-push-test:
-    runs-on: ubuntu-latest
-    needs: test
-    if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref_name == (vars.DEPLOY_BRANCH || 'main')
-    environment: test
-    concurrency:
-      group: pogoda-env-publish-test
-      cancel-in-progress: false
-    outputs:
-      image_digest: ${{ steps.publish.outputs.digest }}
-      image_tag: ${{ steps.configuration.outputs.image_tag }}
-    steps:
-      - name: Read test image configuration
-        id: configuration
-        env:
-          IMAGE_TAG: ${{ vars.IMAGE_TAG }}
-        run: |
-          if [ "$IMAGE_TAG" != 'testpiotrkoska' ]; then
-            echo "::error::Ustaw IMAGE_TAG=testpiotrkoska w Environment test."
-            exit 1
-          fi
-          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
-          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+  # build-and-push-test:
+  #   runs-on: ubuntu-latest
+  #   needs: test
+  #   if: >-
+  #     (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+  #     github.ref_name == (vars.DEPLOY_BRANCH || 'main')
+  #   environment: test
+  #   concurrency:
+  #     group: pogoda-env-publish-test
+  #     cancel-in-progress: false
+  #   outputs:
+  #     image_digest: ${{ steps.publish.outputs.digest }}
+  #     image_tag: ${{ steps.configuration.outputs.image_tag }}
+  #   steps:
+  #     - name: Read test image configuration
+  #       id: configuration
+  #       env:
+  #         IMAGE_TAG: ${{ vars.IMAGE_TAG }}
+  #       run: |
+  #         if [ "$IMAGE_TAG" != 'testpiotrkoska' ]; then
+  #           echo "::error::Ustaw IMAGE_TAG=testpiotrkoska w Environment test."
+  #           exit 1
+  #         fi
+  #         echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+  #         echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+  #     - name: Log in to Docker Hub
+  #       uses: docker/login-action@v3
+  #       with:
+  #         username: ${{ env.DOCKERHUB_USERNAME }}
+  #         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push test image
-        id: publish
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ env.WORKDIR }}
-          push: true
-          tags: |
-            ${{ env.HUB_IMAGE_BASE }}:${{ env.IMAGE_TAG }}
-            ${{ env.HUB_IMAGE_BASE }}:${{ env.IMAGE_TAG }}-${{ github.sha }}
+  #     - name: Build and push test image
+  #       id: publish
+  #       uses: docker/build-push-action@v6
+  #       with:
+  #         context: ${{ env.WORKDIR }}
+  #         push: true
+  #         tags: |
+  #           ${{ env.HUB_IMAGE_BASE }}:${{ env.IMAGE_TAG }}
+  #           ${{ env.HUB_IMAGE_BASE }}:${{ env.IMAGE_TAG }}-${{ github.sha }}
 
-  deploy-test:
+  # deploy-test:
     runs-on: [self-hosted, linux]
     needs: build-and-push-test
     environment: test
@@ -418,7 +418,7 @@ jobs:
 
   build-and-push-prod:
     runs-on: ubuntu-latest
-    needs: [test, deploy-dev, deploy-test]
+    needs: [test, deploy-dev]
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref_name == (vars.DEPLOY_BRANCH || 'main')
