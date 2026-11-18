@@ -198,11 +198,11 @@ jobs:
             exit 1
           fi
 
-          echo "Obraz: $env.HUB_IMAGE_BASE"
-          echo "Tag: $env.DOCKERHUB_TAG"
-          echo "Port: $env.DOCKER_PORT_EXTERNAL"
-          echo "Kontener: $env.DEPLOY_CONTAINER_NAME"
-          echo "Miasto: $env.WEATHER_CITY"
+          echo "Obraz: $HUB_IMAGE_BASE"
+          echo "Tag: $DOCKERHUB_TAG"
+          echo "Port: $DOCKER_PORT_EXTERNAL"
+          echo "Kontener: $DEPLOY_CONTAINER_NAME"
+          echo "Miasto: $WEATHER_CITY"
 
       - name: Print step variable scope
         env:
@@ -222,12 +222,12 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Pull published image from Docker Hub
-        run: docker pull "${env.HUB_IMAGE_BASE}@${{ env.IMAGE_DIGEST }}"
+        run: docker pull "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
 
       - name: Remove previous deployment container if it exists
         run: |
           # Nazwa została zweryfikowana przed użyciem w filtrze regex.
-          existing_container="$(docker container ls --all --quiet --filter "name=^/${env.DEPLOY_CONTAINER_NAME}$")"
+          existing_container="$(docker container ls --all --quiet --filter "name=^/${DEPLOY_CONTAINER_NAME}$")"
           if [ -n "$existing_container" ]; then
             docker rm --force "$existing_container"
           fi
@@ -237,11 +237,11 @@ jobs:
           OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
         run: |
           docker run -d \
-            --name "${{ env.DEPLOY_CONTAINER_NAME }}" \
+            --name "$DEPLOY_CONTAINER_NAME" \
             --restart unless-stopped \
-            -p "${{ env.DOCKER_PORT_EXTERNAL }}:8000" \
+            -p "${DOCKER_PORT_EXTERNAL}:8000" \
             -e OPENWEATHER_API_KEY \
-            "${{ env.HUB_IMAGE_BASE }}@${{ env.IMAGE_DIGEST }}"
+            "${HUB_IMAGE_BASE}@${IMAGE_DIGEST}"
 
       - name: Verify deployed API is ready
         run: |
@@ -249,21 +249,19 @@ jobs:
             --retry 15 --retry-all-errors --retry-delay 2 \
             --retry-max-time 60 --max-time 5 \
             --output /dev/null \
-            "${{ env.API_BASE_URL }}/openapi.json"
-          test "$(docker inspect --format '{{.State.Running}}' "${env.DEPLOY_CONTAINER_NAME}")" = true
+            "$API_BASE_URL/openapi.json"
+          test "$(docker inspect --format '{{.State.Running}}' "$DEPLOY_CONTAINER_NAME")" = true
           echo "Kontener działa, a API jest gotowe."
 
       - name: Test deployed /weather endpoint via curl
         run: |
-          echo "Testowanie wdrożonego endpointu /weather dla miasta: ${env.WEATHER_CITY}"
+          echo "Testowanie wdrożonego endpointu /weather dla miasta: $WEATHER_CITY"
           curl --fail --silent --show-error --max-time 30 \
-            --get --data-urlencode "city=${env.WEATHER_CITY}" \
-            "${env.API_BASE_URL}/weather"
+            --get --data-urlencode "city=$WEATHER_CITY" \
+            "$API_BASE_URL/weather"
           echo
           echo "OK - wdrożony endpoint /weather odpowiada."
 
       - name: Show deployed container logs on failure
         if: failure()
-        run: docker logs "${env.DEPLOY_CONTAINER_NAME}" || true
-
-        
+        run: docker logs "$DEPLOY_CONTAINER_NAME" || true
