@@ -3,7 +3,7 @@
 # Wymagane Repository secrets: DOCKERHUB_TOKEN, OPENWEATHER_API_KEY.
 # Login pochodzi z Repository variable DOCKERHUB_USERNAME (np. piotrskoska).
 # Klucz API trafia do docker run -e, nigdy do obrazu ani outputs.
-# Self-hosted Linux: Docker dla konta runnera, python3, curl, wolny wybrany port.
+# Self-hosted Linux: runner >= 2.327.1 (Node.js 24), Docker, python3, curl, wolny port.
 # Instrukcja: CWICZENIA/17A-Cwiczenia-pipeline-gha/README.md.
 
 name: 17A Reusable — Docker deploy
@@ -26,9 +26,10 @@ on:
         required: true
       app_port:
         description: Wolny port hosta, od 1024 do 65535
-        type: number
+        # Zgodny typ z workflow_dispatch; walidacja Bash odrzuca niepoprawne porty.
+        type: string
         required: false
-        default: 18817
+        default: '18817'
       weather_city:
         description: Miasto do prawdziwego testu WWW/API
         type: string
@@ -76,7 +77,7 @@ jobs:
       DOCKERHUB_USERNAME: ${{ inputs.dockerhub_username }}
     steps:
       - name: Checkout the provided application test
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -133,7 +134,7 @@ jobs:
           echo "DOCKER_CONFIG=$task_docker_config" >> "$GITHUB_ENV"
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ inputs.dockerhub_username }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

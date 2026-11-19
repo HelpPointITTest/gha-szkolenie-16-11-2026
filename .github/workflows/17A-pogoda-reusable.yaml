@@ -5,7 +5,7 @@
 # Repository secrets:
 #   DOCKERHUB_TOKEN = token Docker Hub z prawem publikowania i pobierania obrazu
 #   OPENWEATHER_API_KEY = prawdziwy, aktywny klucz OpenWeatherMap
-# Runner deploya: self-hosted Linux, Docker dostępny dla konta runnera, python3, curl.
+# Runner deploya: Linux self-hosted, agent >= 2.327.1 (Node.js 24), Docker, python3, curl.
 # Port 18817 musi być wolny; na wspólnym hoście każdy uczestnik wybiera własny port.
 # Instrukcja: CWICZENIA/17A-Cwiczenia-pipeline-gha/README.md.
 
@@ -31,8 +31,9 @@ on:
       app_port:
         description: Wolny port HTTP na self-hosted, osobny dla uczestnika
         required: true
-        type: number
-        default: 18817
+        # Tekst po obu stronach workflow_call; deploy sprawdza liczbę i zakres portu.
+        type: string
+        default: '18817'
 
 permissions:
   contents: read
