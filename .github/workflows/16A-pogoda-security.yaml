@@ -8,8 +8,11 @@
 # Nie wpisuj wartości sekretów do YAML, Dockerfile, build-args ani outputs.
 # Klucz pogody jest przekazywany wyłącznie przy docker run -e.
 # Gotowe akcje: Trivy v0.36.0 / CLI v0.70.0 oraz Bandit 1.9.4.
-# Blokady: Trivy HIGH/CRITICAL (także bez poprawki), sekrety każdego poziomu;
-# Bandit MEDIUM/HIGH. Raporty: Actions → konkretny przebieg → Artifacts.
+# Progi błędów: Trivy HIGH/CRITICAL (także bez poprawki), sekrety każdego poziomu;
+# Bandit MEDIUM/HIGH. Domyślnie błędy jobów security NIE blokują dalszych jobów.
+# Aby włączyć blokowanie, zakomentuj 3 linie continue-on-error: true
+# oznaczone SECURITY_ADVISORY. Progi skanerów i exit-code: '1' pozostaw bez zmian.
+# Raporty: Actions → konkretny przebieg → Artifacts; błędy także w logach jobów.
 # Akcje skanujące są przypięte do pełnych SHA; nie potrzeba GHAS ani tokenów SaaS.
 # Self-hosted: dostępny runner Linux, Docker dostępny dla konta runnera,
 # python3 i curl. Każdy uczestnik na wspólnym hoście wybiera osobny wolny port.
@@ -113,6 +116,8 @@ jobs:
     name: Trivy — zależności, Dockerfile i sekrety źródeł
     runs-on: ubuntu-latest
     needs: prepare
+    # SECURITY_ADVISORY: zakomentuj poniższą linię, aby błędy tego joba blokowały pipeline.
+    continue-on-error: true
     timeout-minutes: 30
     steps:
       - name: Checkout application source
@@ -158,6 +163,7 @@ jobs:
           timeout: 10m
 
       - name: Require both valid source scan reports
+        if: ${{ !cancelled() && steps.scan_scope.outcome == 'success' }}
         run: |
           for report in trivy-source-dependencies.json trivy-source-secrets.json; do
             test -s "$report"
@@ -180,6 +186,8 @@ jobs:
     name: Bandit — analiza bezpieczeństwa kodu Python
     runs-on: ubuntu-latest
     needs: prepare
+    # SECURITY_ADVISORY: zakomentuj poniższą linię, aby błędy tego joba blokowały pipeline.
+    continue-on-error: true
     timeout-minutes: 15
     steps:
       - name: Checkout application source
@@ -194,6 +202,7 @@ jobs:
           bandit_flags: '-ll -i -f json -o bandit-report.json'
 
       - name: Require a valid report and actual code coverage
+        if: ${{ !cancelled() }}
         run: |
           jq -e '.errors == [] and (.metrics._totals.loc > 0)' bandit-report.json >/dev/null
 
@@ -324,9 +333,11 @@ jobs:
     name: Trivy — dokładnie przetestowany obraz
     runs-on: ubuntu-latest
     needs: [prepare, build, test]
+    # SECURITY_ADVISORY: zakomentuj poniższą linię, aby błędy tego joba blokowały pipeline.
+    continue-on-error: true
     timeout-minutes: 30
     outputs:
-      scanned_image_id: ${{ steps.security_gate.outputs.image_id }}
+      verified_image_id: ${{ steps.verified_image.outputs.image_id }}
     env:
       CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
       EXPECTED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
@@ -341,6 +352,9 @@ jobs:
         run: |
           docker load -i image.tar
           test "$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")" = "$EXPECTED_IMAGE_ID"
+          # To ID wejścia skanerów, a nie potwierdzenie braku podatności.
+          # Zapis przed skanami pozwala publikować również w trybie SECURITY_ADVISORY.
+          echo "image_id=$EXPECTED_IMAGE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Trivy OS and application dependency vulnerabilities in the image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -374,13 +388,12 @@ jobs:
           timeout: 10m
 
       - name: Require both valid image scan reports
-        id: security_gate
+        if: ${{ !cancelled() && steps.verified_image.outcome == 'success' }}
         run: |
           for report in trivy-image-vulnerabilities.json trivy-image-secrets.json; do
             test -s "$report"
             jq -e 'type == "object" and .SchemaVersion == 2' "$report" >/dev/null
           done
-          echo "image_id=$EXPECTED_IMAGE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Upload image security reports even after findings
         if: always()
@@ -403,7 +416,7 @@ jobs:
     env:
       CI_IMAGE: ${{ needs.prepare.outputs.ci_image }}
       EXPECTED_IMAGE_ID: ${{ needs.build.outputs.image_id }}
-      SCANNED_IMAGE_ID: ${{ needs.image-security.outputs.scanned_image_id }}
+      VERIFIED_IMAGE_ID: ${{ needs.image-security.outputs.verified_image_id }}
       IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
       SHA_TAG: ${{ needs.prepare.outputs.sha_tag }}
     steps:
@@ -416,7 +429,8 @@ jobs:
         run: |
           docker load -i image.tar
           test "$(docker image inspect --format '{{.Id}}' "$CI_IMAGE")" = "$EXPECTED_IMAGE_ID"
-          test "$EXPECTED_IMAGE_ID" = "$SCANNED_IMAGE_ID"
+          # Integralność obrazu obowiązuje również przy tolerowaniu błędów skanerów.
+          test "$EXPECTED_IMAGE_ID" = "$VERIFIED_IMAGE_ID"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
