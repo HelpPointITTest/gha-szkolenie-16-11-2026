@@ -6,6 +6,7 @@ RUN apt-get install -y wget unzip
 # Usuwamy domyślne pliki z katalogu HTML (opcjonalne)
 RUN apt-get install -y openjdk-21-jre
 RUN rm -rf /usr/share/nginx/html/*
+RUN touch /usr/share/nginx/html/moj.html
 # Kopiujemy nasz index.html do katalogu serwowanego przez nginx
 COPY index.html /usr/share/nginx/html/index.html
 
